@@ -164,7 +164,7 @@ def signed_or_unsigned(data: bytes) -> dict[str, int]:
 
 
 def base_event(record: dict[str, Any], protocol: str = "canopen") -> dict[str, Any]:
-    return {
+    event = {
         "type": "decoded",
         "protocol": protocol,
         "source_sequence": record.get("sequence"),
@@ -173,6 +173,10 @@ def base_event(record: dict[str, Any], protocol: str = "canopen") -> dict[str, A
         "can_id": record.get("id"),
         "arbitration_id": record.get("arbitration_id"),
     }
+    for key in ("direction", "source", "piher_angle_raw", "piher_angle_deg"):
+        if key in record:
+            event[key] = record[key]
+    return event
 
 
 def decode_nmt(record: dict[str, Any], data: bytes) -> dict[str, Any]:
@@ -393,6 +397,11 @@ def decode_frame(record: dict[str, Any]) -> dict[str, Any]:
 
     extended = bool(record.get("extended"))
     if extended:
+        if arbitration_id == 0x00000000 and len(data) == 2:
+            event = decode_nmt(record, data)
+            event["extended_wrapper"] = True
+            event["note"] = "decoded as logical NMT from extended-wrapper frame"
+            return event
         event = base_event(record, protocol="unknown")
         event.update({"service": "non-canopen", "reason": "CANopen base profile uses 11-bit identifiers"})
         return event
