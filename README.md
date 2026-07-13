@@ -462,3 +462,21 @@ python .\can_dump.py --device canable --channel 0 --bitrate auto
 Для CandleLight `--channel` — индекс среди найденных GS-USB устройств, начиная с `0`. Для SLCAN это имя COM-порта из диспетчера устройств Windows.
 
 Дополнительно можно указать `--count 5`, `--timeout 10` и скорость последовательного порта через `--tty-baudrate`. Для профиля `raccoonlab` по умолчанию используется UART 1 Мбит/с, для остальных SLCAN-устройств — 115200 бод. Если устройство не подтверждает последовательность `C/Sx/L` либо GS-USB прошивка не заявляет и не включает `LISTEN_ONLY`, скрипт завершается ошибкой. Он не пытается продолжить в активном режиме.
+
+## Браузерный dashboard D65
+
+Dashboard запускается из `canopen_live_monitor_v2.py` флагом `--dashboard`. В live-режиме скрипт по-прежнему пишет сырой JSONL-лог и результаты в `parsedD65`:
+
+```powershell
+python .\canopen_live_monitor_v2.py --device canable --channel 0 --bitrate auto --dashboard
+```
+
+Для просмотра существующего лога:
+
+```powershell
+python .\canopen_live_monitor_v2.py --playback-log 2026-07-13_01-18-48_D65_can0_horn.jsonl --dashboard
+```
+
+По умолчанию используется `http://127.0.0.1:8765/`. Параметры `--dashboard-host` и `--dashboard-port` меняют адрес привязки, а `--dashboard-no-open` отключает автоматическое открытие вкладки. После завершения replay сервер остаётся доступен до нажатия `Ctrl+C`.
+
+Графики строятся только для каналов из подтверждённого `ANALOG_CATALOG`. Неидентифицированные слова PDO остаются в таблице сырых значений и не выдаются за физические величины.

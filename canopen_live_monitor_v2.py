@@ -13,7 +13,7 @@ import os
 import re
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +32,7 @@ from can_dump import (
 from can_log import DetectingStderr, frame_to_record, make_log_path, safe_log_name, write_jsonl
 from canopen_decode import HEARTBEAT_STATES, decode_frame, resolve_log
 from canopen_live_monitor import IO_TPDO1_SIGNALS, NODE_NAMES
+from d65_dashboard import DashboardServer
 
 
 PARSED_DIR_DEFAULT = Path("parsedD65")
@@ -61,6 +62,22 @@ class SignalDefinition:
     confidence: str = "confirmed"
 
 
+@dataclass(frozen=True)
+class AnalogDefinition:
+    key: str
+    name: str
+    cob_id: int
+    byte: int
+    length: int
+    scale: float
+    offset: float
+    unit: str
+    signed: bool = False
+    byte_order: str = "little"
+    source: str = "protocol analysis"
+    confidence: str = "confirmed"
+
+
 @dataclass
 class SignalState:
     definition: SignalDefinition
@@ -76,6 +93,15 @@ class SignalState:
         if self.value is None:
             return "UNKNOWN"
         return "ON" if self.value else "OFF"
+
+
+@dataclass
+class AnalogState:
+    definition: AnalogDefinition
+    value: float | None = None
+    raw_value: int | None = None
+    updates: int = 0
+    samples: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
 
 
 @dataclass
@@ -112,6 +138,8 @@ class MonitorState:
     services: Counter[str] = field(default_factory=Counter)
     nodes: dict[int, NodeState] = field(default_factory=dict)
     signals: dict[str, SignalState] = field(default_factory=dict)
+    analog: dict[str, AnalogState] = field(default_factory=dict)
+    recent_events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=50))
     last_frame: str = "-"
     last_error: str = ""
 
@@ -195,6 +223,23 @@ SIGNALS_BY_COB_ID: dict[int, list[SignalDefinition]] = {}
 for _definition in SIGNAL_CATALOG.values():
     SIGNALS_BY_COB_ID.setdefault(_definition.cob_id, []).append(_definition)
 
+# Keep this catalog empty until a channel's byte layout, scale, and unit are
+# identified. Raw PDO words are not automatically treated as analog values.
+ANALOG_CATALOG: tuple[AnalogDefinition, ...] = ()
+ANALOG_BY_COB_ID: dict[int, list[AnalogDefinition]] = {}
+for _definition in ANALOG_CATALOG:
+    ANALOG_BY_COB_ID.setdefault(_definition.cob_id, []).append(_definition)
+
+
+def dashboard_port(value: str) -> int:
+    try:
+        port = int(value, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("dashboard port must be an integer") from error
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError("dashboard port must be between 0 and 65535")
+    return port
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -228,6 +273,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--flush-every", type=positive_int, default=100)
     parser.add_argument("--refresh", type=positive_float, default=0.2)
     parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="serve and open the read-only browser dashboard",
+    )
+    parser.add_argument(
+        "--dashboard-host",
+        default="127.0.0.1",
+        help="dashboard bind address (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=dashboard_port,
+        default=8765,
+        help="preferred dashboard port; tries the next 19 ports if busy (default: 8765)",
+    )
+    parser.add_argument(
+        "--dashboard-no-open",
+        action="store_true",
+        help="start the dashboard server without opening a browser tab",
+    )
+    parser.add_argument(
         "--playback-log",
         help="existing JSONL path, filename, or unique part of a filename from logs/",
     )
@@ -243,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(sorted(IO_TPDO1_SIGNALS)),
         help="show one I/O module with full signal names instead of five columns",
     )
-    parser.add_argument("--no-screen", action="store_true", help="parse and write files without dashboard")
+    parser.add_argument("--no-screen", action="store_true", help="disable the terminal dashboard")
     parser.add_argument(
         "--duration",
         type=non_negative_float,
@@ -294,6 +360,28 @@ def signal_value(data: bytes, definition: SignalDefinition) -> bool | None:
     if byte_index >= len(data):
         return None
     return bool(data[byte_index] & (1 << definition.bit))
+
+
+def update_analog_channels(state: MonitorState, cob_id: int, data: bytes, timestamp: float) -> None:
+    for definition in ANALOG_BY_COB_ID.get(cob_id, []):
+        start = definition.byte - 1
+        end = start + definition.length
+        if start < 0 or end > len(data):
+            continue
+        raw_value = int.from_bytes(
+            data[start:end],
+            byteorder=definition.byte_order,
+            signed=definition.signed,
+        )
+        value = raw_value * definition.scale + definition.offset
+        analog = state.analog.get(definition.key)
+        if analog is None:
+            analog = AnalogState(definition=definition)
+            state.analog[definition.key] = analog
+        analog.raw_value = raw_value
+        analog.value = value
+        analog.updates += 1
+        analog.samples.append((timestamp, value))
 
 
 def signal_record(signal: SignalState) -> dict[str, Any]:
@@ -430,6 +518,7 @@ def decode_d65_frame(
     decoded_signals: list[dict[str, Any]] = []
     changes: list[dict[str, Any]] = []
     if isinstance(arbitration_id, int):
+        update_analog_channels(state, arbitration_id, payload, timestamp)
         for definition in SIGNALS_BY_COB_ID.get(arbitration_id, []):
             value = signal_value(payload, definition)
             signal, change = update_signal(state, definition, value, timestamp, record)
@@ -446,6 +535,8 @@ def decode_d65_frame(
             )
             if change is not None:
                 changes.append(change)
+                if not change["initial"]:
+                    state.recent_events.appendleft(change)
     if decoded_signals:
         event["signals"] = decoded_signals
     return event, changes
@@ -555,12 +646,47 @@ class ParsedOutputs:
 
 
 def short(text: str, width: int) -> str:
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[\r\n\t]+", " ", text)
     if len(text) <= width:
         return text
     if width <= 1:
         return text[:width]
     return text[: width - 1] + "~"
+
+
+def compact_signal_name(name: str) -> str:
+    """Keep the electrical tag while removing words that add little in a matrix."""
+    replacements = (
+        (" MANIPULATOR ", " "),
+        (" MANPULATER ", " "),
+        (" SWITCH ", " "),
+        (" SWITH ", " "),
+        (" SWTCH ", " "),
+        (" SIGNAL ", " "),
+    )
+    result = f" {name} "
+    for old, new in replacements:
+        result = result.replace(old, new)
+    result = re.sub(r"\s+", " ", result).strip()
+    result = result.replace("TRACK OSCILLATION", "TRACK OSC.")
+    result = result.replace("HYDRAULIC", "HYDR.")
+    result = result.replace("DRILL SUPPORT", "DRILL SUPP.")
+    result = result.replace("IGNITION KEY", "IGN.KEY")
+    result = result.replace("WARNING CABIN", "CABIN WARNING")
+    return result
+
+
+def compact_payload(data: bytes, width: int = 8) -> str:
+    text = data.hex().upper()
+    if not text:
+        return "-"
+    if len(text) <= width:
+        return text
+    if width < 6:
+        return text[:width]
+    tail = 2
+    head = width - tail - 2
+    return f"{text[:head]}..{text[-tail:]}"
 
 
 def terminal_size() -> os.terminal_size:
@@ -570,28 +696,28 @@ def terminal_size() -> os.terminal_size:
         return os.terminal_size((160, 45))
 
 
-def signal_dashboard_text(state: MonitorState, definition: SignalDefinition) -> str:
-    signal = state.signals.get(definition.key)
-    prefix = "??" if signal is None or signal.value is None else ("ON" if signal.value else "off")
-    return f"{prefix:>3} {definition.name}"
-
-
 def render_io_columns(state: MonitorState, width: int) -> list[str]:
     node_ids = sorted(IO_TPDO1_SIGNALS)
     prefix_width = 4
     gap = " | "
     column_width = max(16, (width - prefix_width - len(gap) * (len(node_ids) - 1)) // len(node_ids))
-    lines = ["I/O X3 process image (pin N = TPDO1 bit N-1)"]
+    lines = ["I/O X3 INPUTS | ON=active  .=inactive  ?=not received"]
     lines.append("Pin " + gap.join(NODE_NAMES[node_id].center(column_width) for node_id in node_ids))
     for pin in range(1, 17):
         cells = []
         for node_id in node_ids:
             name = IO_TPDO1_SIGNALS[node_id][pin]
             if name == "GND":
-                text = " -- GND"
+                text = "   --"
             else:
                 key = f"{NODE_NAMES[node_id]}.X3.{pin:02d}"
-                text = signal_dashboard_text(state, SIGNAL_CATALOG[key])
+                definition = SIGNAL_CATALOG[key]
+                signal = state.signals.get(key)
+                if signal is None or signal.value is None:
+                    marker = "?"
+                else:
+                    marker = "ON" if signal.value else "."
+                text = f"{marker:<3}{compact_signal_name(definition.name)}"
             cells.append(short(text, column_width).ljust(column_width))
         lines.append(f"{pin:>2}  " + gap.join(cells))
     return lines
@@ -613,11 +739,40 @@ def render_focus_node(state: MonitorState, node_id: int) -> list[str]:
     return lines
 
 
-def age_text(last_seen: float, now_source: float) -> str:
-    if not last_seen:
-        return "-"
-    age = max(0.0, now_source - last_seen)
-    return f"{age:.1f}s" if age < 10 else f"{age:.0f}s"
+def heartbeat_short(value: str) -> str:
+    return {
+        "operational": "OP",
+        "pre-operational": "PRE",
+        "stopped": "STOP",
+        "boot-up": "BOOT",
+        "-": "-",
+    }.get(value, short(value.upper(), 4))
+
+
+def render_node_table(state: MonitorState) -> list[str]:
+    columns = (
+        ("TPDO", 1, "T1"),
+        ("TPDO", 2, "T2"),
+        ("TPDO", 3, "T3"),
+        ("TPDO", 4, "T4"),
+        ("RPDO", 1, "R1"),
+        ("RPDO", 2, "R2"),
+        ("RPDO", 3, "R3"),
+        ("RPDO", 4, "R4"),
+    )
+    lines = ["ID  NODE         NMT  " + " ".join(label.center(8) for _, _, label in columns) + "   (HEX)"]
+    for node_id in sorted(state.nodes):
+        node = state.nodes[node_id]
+        values = []
+        for service, number, _ in columns:
+            pdo = node.pdo.get((service, number))
+            value = "-" if pdo is None else compact_payload(pdo.data)
+            values.append(value.center(8))
+        lines.append(
+            f"{node_id:>2}  {short(node.name, 12):<12} {heartbeat_short(node.heartbeat):<4} "
+            + " ".join(values)
+        )
+    return lines
 
 
 def render_dashboard(
@@ -632,12 +787,12 @@ def render_dashboard(
         max(0.0, state.last_source_epoch - state.first_source_epoch) if state.first_source_epoch else 0.0
     )
     lines = [
-        f"D65 CANopen monitor v2 | {state.mode} | Ctrl+C stop",
-        f"Raw/source: {source_log.resolve()}",
-        f"Parsed: {parsed_dir.resolve()}",
-        f"Frames={state.frames} duration={source_duration:.3f}s changes={state.signal_change_count} "
-        + " ".join(f"{name}={count}" for name, count in sorted(state.services.items())),
-        f"Last: {state.last_frame}",
+        f"D65 CANopen monitor v2  |  mode={state.mode.upper()}  |  Ctrl+C: stop",
+        f"SOURCE  {source_log.resolve()}",
+        f"OUTPUT  {parsed_dir.resolve()}",
+        f"FRAMES  {state.frames:<8}  TIME  {source_duration:>8.3f}s  CHANGES  {state.signal_change_count:<5}  ERRORS  {state.decode_errors}",
+        "SERVICES  " + "  ".join(f"{name}:{count}" for name, count in sorted(state.services.items())),
+        f"LAST  {state.last_frame}",
     ]
     if state.last_error:
         lines.append(f"Error: {state.last_error}")
@@ -647,20 +802,12 @@ def render_dashboard(
     else:
         lines.extend(render_focus_node(state, focus_node))
 
-    lines.extend(("", "Nodes and PDO process values", "ID  Name        NMT          PDO values"))
-    for node_id in sorted(state.nodes):
-        node = state.nodes[node_id]
-        parts = []
-        for pdo in sorted(node.pdo.values(), key=lambda item: (item.service, item.number)):
-            parts.append(
-                f"{pdo.service}{pdo.number}={pdo.data.hex().upper() or '-'} "
-                f"u16={generic_values(pdo.data)['le_u16']} chg={pdo.changes} age={age_text(pdo.last_seen, state.last_source_epoch)}"
-            )
-        lines.append(f"{node_id:>2}  {node.name:<11} {node.heartbeat:<12} " + " | ".join(parts))
+    lines.append("")
+    lines.extend(render_node_table(state))
 
     if height > 0:
         lines = lines[: max(1, height - 1)]
-    return "\n".join(short(line, width) for line in lines)
+    return "\n".join(short(line.rstrip(), width) for line in lines)
 
 
 def enable_virtual_terminal() -> None:
@@ -716,6 +863,148 @@ def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
                 yield {"type": "parse_error", "line": line_number, "error": str(error)}
 
 
+def browser_dashboard_snapshot(
+    state: MonitorState,
+    source_log: Path,
+    output_dir: Path,
+    phase: str,
+) -> dict[str, Any]:
+    duration = max(0.0, state.last_source_epoch - state.first_source_epoch) if state.first_source_epoch else 0.0
+    grouped_signals: dict[tuple[int, int, str, int], dict[str, Any]] = {}
+    for definition in sorted(
+        SIGNAL_CATALOG.values(),
+        key=lambda item: (item.node_id, item.cob_id, item.byte, item.bit),
+    ):
+        group_key = (definition.node_id, definition.cob_id, definition.service, definition.pdo_number)
+        group = grouped_signals.setdefault(
+            group_key,
+            {
+                "node_id": definition.node_id,
+                "node_name": definition.node_name,
+                "cob_id": f"0x{definition.cob_id:03X}",
+                "service": f"{definition.service}{definition.pdo_number}",
+                "signals": [],
+            },
+        )
+        signal = state.signals.get(definition.key)
+        value = None if signal is None else signal.value
+        group["signals"].append(
+            {
+                "key": definition.key,
+                "name": definition.name,
+                "pin": definition.pin,
+                "location": (
+                    f"X3:{definition.pin:02d}"
+                    if definition.pin is not None
+                    else f"B{definition.byte}.{definition.bit}"
+                ),
+                "value": value,
+                "state": "UNKNOWN" if value is None else ("ON" if value else "OFF"),
+                "changes": 0 if signal is None else signal.changes,
+                "confidence": definition.confidence,
+            }
+        )
+
+    nodes = []
+    for node_id, node in sorted(state.nodes.items()):
+        pdo_values = {f"{pdo.service[0]}{pdo.number}": pdo.data.hex().upper() or "-" for pdo in node.pdo.values()}
+        nodes.append(
+            {
+                "node_id": node_id,
+                "name": node.name,
+                "heartbeat": node.heartbeat,
+                "pdo": pdo_values,
+                "frames": sum(pdo.count for pdo in node.pdo.values()),
+            }
+        )
+
+    events = []
+    for event in state.recent_events:
+        event_epoch = float(event.get("timestamp_epoch") or state.first_source_epoch or 0.0)
+        events.append(
+            {
+                "name": event["name"],
+                "key": event["key"],
+                "value": event["value"],
+                "state": event["state"],
+                "offset_seconds": max(0.0, event_epoch - state.first_source_epoch),
+            }
+        )
+
+    analog_channels = []
+    for definition in ANALOG_CATALOG:
+        analog = state.analog.get(definition.key)
+        analog_channels.append(
+            {
+                "key": definition.key,
+                "name": definition.name,
+                "value": None if analog is None else analog.value,
+                "raw_value": None if analog is None else analog.raw_value,
+                "unit": definition.unit,
+                "confidence": definition.confidence,
+                "samples": (
+                    []
+                    if analog is None
+                    else [
+                        {
+                            "time": max(0.0, timestamp - state.first_source_epoch),
+                            "value": value,
+                        }
+                        for timestamp, value in analog.samples
+                    ]
+                ),
+            }
+        )
+
+    return {
+        "phase": phase,
+        "mode": state.mode,
+        "source": str(source_log.resolve()),
+        "output": str(output_dir.resolve()),
+        "frames": state.frames,
+        "duration_seconds": duration,
+        "signal_changes": state.signal_change_count,
+        "decode_errors": state.decode_errors,
+        "last_frame": state.last_frame,
+        "last_error": state.last_error,
+        "services": dict(sorted(state.services.items())),
+        "digital_modules": list(grouped_signals.values()),
+        "analog": analog_channels,
+        "nodes": nodes,
+        "events": events,
+    }
+
+
+def start_browser_dashboard(
+    args: argparse.Namespace,
+    state: MonitorState,
+    source_log: Path,
+    output_dir: Path,
+) -> DashboardServer | None:
+    if not args.dashboard:
+        return None
+    dashboard = DashboardServer(
+        host=args.dashboard_host,
+        port=args.dashboard_port,
+        open_browser=not args.dashboard_no_open,
+    )
+    dashboard.update(browser_dashboard_snapshot(state, source_log, output_dir, "starting"))
+    url = dashboard.start()
+    print(f"Dashboard: {url}", file=sys.stderr)
+    return dashboard
+
+
+def publish_browser_dashboard(
+    dashboard: DashboardServer | None,
+    state: MonitorState,
+    source_log: Path,
+    output_dir: Path,
+    phase: str,
+) -> None:
+    if dashboard is not None:
+        dashboard.update(browser_dashboard_snapshot(state, source_log, output_dir, phase))
+
+
 def maybe_draw(
     screen: StableScreen,
     state: MonitorState,
@@ -738,6 +1027,11 @@ def run_playback(args: argparse.Namespace) -> int:
 
     output_dir = args.parsed_dir / log_path.stem
     state = MonitorState(mode="replay")
+    try:
+        dashboard = start_browser_dashboard(args, state, log_path, output_dir)
+    except OSError as error:
+        print(f"Could not start dashboard: {error}", file=sys.stderr)
+        return 2
     outputs = ParsedOutputs(output_dir, log_path, mode="replay")
     next_draw = 0.0
     first_frame_epoch: float | None = None
@@ -777,9 +1071,11 @@ def run_playback(args: argparse.Namespace) -> int:
                 now = time.monotonic()
                 if now >= next_draw:
                     maybe_draw(screen, state, log_path, output_dir, args.focus_node)
+                    publish_browser_dashboard(dashboard, state, log_path, output_dir, "running")
                     next_draw = now + args.refresh
 
             maybe_draw(screen, state, log_path, output_dir, args.focus_node)
+            publish_browser_dashboard(dashboard, state, log_path, output_dir, "complete")
     except KeyboardInterrupt:
         status = "interrupted"
         return_code = 0
@@ -794,6 +1090,16 @@ def run_playback(args: argparse.Namespace) -> int:
     print(f"Source: {log_path.resolve()}", file=sys.stderr)
     print(f"Parsed: {output_dir.resolve()}", file=sys.stderr)
     print(f"Frames: {state.frames}; signal changes: {state.signal_change_count}", file=sys.stderr)
+    publish_browser_dashboard(dashboard, state, log_path, output_dir, status)
+    if dashboard is not None:
+        if status == "complete":
+            print(f"Replay complete; dashboard remains at {dashboard.url} (Ctrl+C to stop)", file=sys.stderr)
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass
+        dashboard.stop()
     return return_code
 
 
@@ -819,6 +1125,13 @@ def run_live(args: argparse.Namespace) -> int:
 
     state = MonitorState(mode="live")
     outputs = ParsedOutputs(output_dir, log_path, mode="live")
+    try:
+        dashboard = start_browser_dashboard(args, state, log_path, output_dir)
+    except OSError as error:
+        print(f"Could not start dashboard: {error}", file=sys.stderr)
+        reader.close()
+        outputs.close(state, status="error")
+        return 2
     next_draw = 0.0
     status = "complete"
     return_code = 0
@@ -861,8 +1174,10 @@ def run_live(args: argparse.Namespace) -> int:
                 now = time.monotonic()
                 if now >= next_draw:
                     maybe_draw(screen, state, log_path, output_dir, args.focus_node)
+                    publish_browser_dashboard(dashboard, state, log_path, output_dir, "running")
                     next_draw = now + args.refresh
             maybe_draw(screen, state, log_path, output_dir, args.focus_node)
+            publish_browser_dashboard(dashboard, state, log_path, output_dir, "complete")
     except KeyboardInterrupt:
         status = "interrupted"
     except Exception as error:
@@ -873,6 +1188,9 @@ def run_live(args: argparse.Namespace) -> int:
     finally:
         reader.close()
         outputs.close(state, status=status)
+        publish_browser_dashboard(dashboard, state, log_path, output_dir, status)
+        if dashboard is not None:
+            dashboard.stop()
 
     print(f"Stopped. Raw frames: {state.frames}; signal changes: {state.signal_change_count}", file=sys.stderr)
     return return_code
