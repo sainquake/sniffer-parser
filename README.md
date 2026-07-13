@@ -480,3 +480,6 @@ python .\canopen_live_monitor_v2.py --playback-log 2026-07-13_01-18-48_D65_can0_
 По умолчанию используется `http://127.0.0.1:8765/`. Параметры `--dashboard-host` и `--dashboard-port` меняют адрес привязки, а `--dashboard-no-open` отключает автоматическое открытие вкладки. После завершения replay сервер остаётся доступен до нажатия `Ctrl+C`.
 
 Графики строятся только для каналов из подтверждённого `ANALOG_CATALOG`. Неидентифицированные слова PDO остаются в таблице сырых значений и не выдаются за физические величины.
+Current `ANALOG_CATALOG` in `canopen_live_monitor_v2.py` is populated from `d65_nodes.yaml`: D553 tramming joysticks, D552 water-mist raw flow, CPU1/CPU3 PWM actual-current feedback, CPU3 temperature channels, and CPU2 raw pressure / diesel-level candidates. Replay and live runs also write `analog_catalog.json` and `analog_final_state.json` into the matching `parsedD65` folder. Pressure channels whose engineering scale is still unresolved are displayed as raw `uA`/`mV`.
+
+If another replay dashboard is still running, the new process does not share the same TCP port. It binds the next free port and prints it, for example `Dashboard: http://127.0.0.1:8766/ (requested port 8765 was busy)`. Use the URL printed by the current run.

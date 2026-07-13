@@ -1,0 +1,724 @@
+schema_version: 1
+
+machine:
+  family: "Epiroc FlexiROC D50/D55/D60/D65"
+  model_under_test: "FlexiROC D65"
+  catalog_status: "reverse_engineered"
+  last_updated: "2026-07-13"
+
+confidence_levels:
+  confirmed: "Directly stated by the user, printed in a schematic, or observed as a CAN fact."
+  high: "Supported by a repeatable log correlation, but not by an object dictionary."
+  inferred: "Plausible interpretation that still needs an isolated physical test."
+  unknown: "Observed object or wire whose function has not been identified."
+
+sources:
+  - id: "user_node_table"
+    kind: "field_information"
+    description: "Node IDs and names supplied by the machine owner."
+  - id: "schematic_io"
+    kind: "electrical_schematic"
+    file: "FlexiROC D65 -10LF (станки №204, 210, 211).pdf"
+    description: "D550-D554 X3 channel assignments."
+  - id: "schematic_power_engine"
+    kind: "electrical_schematic"
+    file: "FlexiROC D65 2.pdf"
+    drawing: "9840042819"
+    revision: "005"
+    sheets: ["04(47)", "05(47)", "06(47)", "07(47)", "08(47)"]
+    description: "Power, ignition, emergency stop, CPU supplies, and diesel engine interfaces."
+  - id: "schematic_cpu_io"
+    kind: "electrical_schematic"
+    file: "FlexiROC D65 CPUs schematic.pdf"
+    drawing: "9840042819"
+    revision: "005"
+    sheets: ["25(47)", "26(47)", "27(47)", "28(47)", "29(47)", "30(47)", "31(47)", "32(47)", "33(47)", "34(47)", "35(47)", "36(47)", "37(47)", "38(47)", "39(47)", "40(47)", "41(47)", "42(47)"]
+    description: "CPU1/CPU2/CPU3 physical inputs, outputs, sensors, actuators, and relays."
+  - id: "horn_log"
+    kind: "can_log"
+    file: "logs/2026-07-13_01-18-48_D65_can0_horn.jsonl"
+    description: "Short CAN0 capture with an isolated cabin horn switch press."
+  - id: "hmi_service_photos"
+    kind: "field_diagnostic_display"
+    captured_date: "2026-07-11"
+    files:
+      - "PXL_20260711_223705180.jpg"
+      - "PXL_20260711_223712750.jpg"
+      - "PXL_20260711_223731851.jpg"
+      - "PXL_20260711_224039807.jpg"
+      - "PXL_20260711_224055026.jpg"
+      - "PXL_20260711_224109628.jpg"
+      - "PXL_20260711_224121303.jpg"
+    description: "On-machine HMI service pages showing signal names, engineering values, raw electrical values, controller/module locations, contacts, and PWM feedback."
+
+buses:
+  can0:
+    physical_layer: "Classical CAN"
+    identifier_format: "11-bit"
+    bitrate: 500000
+    protocol: "CANopen-compatible with Epiroc/Epec vendor extensions"
+    confidence: "confirmed"
+    observed_global_objects:
+      - cob_id: "0x000"
+        service: "CANopen NMT"
+        observation: "81 20 (reset node 32), repeated approximately every 0.5 s"
+        confidence: "confirmed"
+      - cob_id: "0x080"
+        service: "CANopen SYNC"
+        mean_period_ms_in_horn_log: 87.4
+        confidence: "confirmed"
+      - cob_id: "0x07F"
+        service: "vendor fast-cycle marker"
+        dlc: 0
+        mean_period_ms_in_horn_log: 5.34
+        confidence: "high"
+      - cob_id: "0x002"
+        service: "vendor high-priority control"
+        dlc: 8
+        constant_payload_in_horn_log: "00 00 00 00 00 00 00 00"
+        mean_period_ms_in_horn_log: 44.1
+        confidence: "high"
+    notes:
+      - "Standard CANopen COB-ID arithmetic correctly identifies the confirmed nodes."
+      - "No SDO or EMCY traffic was present in the short horn log."
+      - "Heartbeat state 0x05 (Operational) was observed for nodes 1, 4, 5, 6, 7, 16, 17, and 19."
+  can2:
+    protocol: "unknown"
+    presence: "reported by the HMI service page"
+    observed_device: "D171"
+    observed_functions: ["feed-beam rotation deviation", "feed-beam tilt deviation"]
+    engineering_unit: "degree"
+    confidence: "confirmed HMI attribution; no CAN2 log analyzed"
+
+mapping_profiles:
+  io_x3_digital_inputs:
+    service: "TPDO1"
+    payload: "uint16 little-endian"
+    rule: "X3 input pin N is reported in absolute bit N-1; byte and bit fields below are zero-based."
+    strongest_proof: "D552 X3 pin 10 changed absolute bit 9 during the isolated horn test."
+    confidence: "high"
+    limitations:
+      - "The physical X3 channel assignments are schematic facts."
+      - "The pin-to-bit rule is directly proven for D552 pin 10 and extrapolated to the other input pins."
+      - "Output command bits are not identified; do not assume that an output uses the same TPDO1 bit."
+  d553_tpdo2_tramming_joysticks:
+    service: "TPDO2"
+    cob_id: "0x285"
+    payload: "four little-endian uint16 raw RM values"
+    words:
+      - {byte: 0, connector: "X1", contact: 11, signal: "S174A TRAMMING LEFT FORWARD"}
+      - {byte: 2, connector: "X1", contact: 12, signal: "S174B TRAMMING LEFT BACKWARD"}
+      - {byte: 4, connector: "X2", contact: 11, signal: "S175A TRAMMING RIGHT FORWARD"}
+      - {byte: 6, connector: "X2", contact: 12, signal: "S175B TRAMMING RIGHT BACKWARD"}
+    engineering_formula_candidate: "percent = (raw_RM - 2) / 1.2"
+    evidence: "HMI raw values 62,62,64,60 correspond to 50.0%,50.0%,51.7%,48.3%; horn-log PDO values are 62-64,62-63,63-64,61 in the same order."
+    confidence: "high"
+  d552_tpdo2_watermist_flow:
+    service: "TPDO2"
+    cob_id: "0x286"
+    payload: "four little-endian uint16 words"
+    word: {byte: 6, connector: "X2", contact: 12, signal: "S272 WATER MIST FLOW", raw_unit: "RM"}
+    evidence: "The HMI and every horn-log 0x286 payload both show raw value 9; the HMI engineering value is 0.0%."
+    confidence: "high"
+  cpu1_tpdo1_tramming_pwm_feedback:
+    service: "TPDO1"
+    cob_id: "0x190"
+    payload: "four little-endian uint16 actual-current values in mA"
+    words:
+      - {byte: 0, signal: "Y206A TRAMMING LEFT FORWARD actual current"}
+      - {byte: 2, signal: "Y206B TRAMMING LEFT BACKWARD actual current"}
+      - {byte: 4, signal: "Y207A TRAMMING RIGHT FORWARD actual current"}
+      - {byte: 6, signal: "Y207B TRAMMING RIGHT BACKWARD actual current"}
+    evidence: "HMI actual-current vector 0,0,0,4 mA exactly equals all 53 observed 0x190 payloads: 0000 0000 0000 0400."
+    confidence: "high"
+
+scaling_profiles:
+  temperature_4_20ma_minus50_150c:
+    electrical_unit: "uA"
+    electrical_range: [4000, 20000]
+    engineering_unit: "degC"
+    engineering_range: [-50, 150]
+    formula: "temperature_degC = (current_uA - 8000) / 80"
+    display_resolution_degC: 1
+    evidence_samples:
+      - {signal: "B147", current_uA: 8052, displayed_degC: 1}
+      - {signal: "B362", current_uA: 8439, displayed_degC: 5}
+      - {signal: "B366A", current_uA: 8381, displayed_degC: 5}
+      - {signal: "B366B", current_uA: 8342, displayed_degC: 4}
+    confidence: "confirmed within the HMI display resolution"
+  d553_joystick_rm_to_percent:
+    raw_unit: "RM"
+    engineering_unit: "percent"
+    formula: "percent = (raw_RM - 2) / 1.2"
+    observed_points: [{raw_RM: 60, percent: 48.3}, {raw_RM: 62, percent: 50.0}, {raw_RM: 64, percent: 51.7}]
+    confidence: "high"
+
+nodes:
+  - node_id: 1
+    node_id_hex: "0x01"
+    name: "D550"
+    kind: "remote_io"
+    presence: "heartbeat and PDO traffic observed"
+    confidence: "confirmed"
+    functions:
+      - "Operator seat and ignition key inputs"
+      - "Drill lever hold magnets"
+      - "Impact/feed switches and panel indicators"
+    canopen:
+      heartbeat: "0x701"
+      observed_rpdos: ["0x201 (RPDO1, 8 bytes)"]
+      observed_tpdos: ["0x181 (TPDO1, 2 bytes)", "0x281 (TPDO2, 8 bytes)"]
+      input_mapping_profile: "io_x3_digital_inputs"
+    x3_channels:
+      - {pin: 1, type: "input", byte: 0, bit: 0, signal: "B379 OPERATOR IN CHAIR"}
+      - {pin: 2, type: "ground", signal: "GND"}
+      - {pin: 3, type: "input", byte: 0, bit: 2, signal: "S139-50 SWITCH IGNITION KEY START"}
+      - {pin: 4, type: "input", byte: 0, bit: 3, signal: "S139-15 SWITCH IGNITION KEY IGNITION"}
+      - {pin: 5, type: "ground", signal: "GND"}
+      - {pin: 6, type: "ground", signal: "GND"}
+      - {pin: 7, type: "output", pdo_mapping: "unknown", signal: "Y179A HOLD MAGNET DRILL LEVER ROTATION"}
+      - {pin: 8, type: "output", pdo_mapping: "unknown", signal: "Y179B HOLD MAGNET DRILL LEVER FEED"}
+      - {pin: 9, type: "input", byte: 1, bit: 0, signal: "S446A SWITCH IMPACT PRESSURE LOW"}
+      - {pin: 10, type: "input", byte: 1, bit: 1, signal: "S446B SWITCH IMPACT PRESSURE HIGH"}
+      - {pin: 11, type: "input", byte: 1, bit: 2, signal: "S452 SWITCH RAPID FEED THREADING"}
+      - {pin: 12, type: "input", byte: 1, bit: 3, signal: "S453 SWITCH MAGNETS OFF DRILL LEVER"}
+      - {pin: 13, type: "ground", signal: "GND"}
+      - {pin: 14, type: "ground", signal: "GND"}
+      - {pin: 15, type: "output", pdo_mapping: "unknown", signal: "H452 LED GREEN RAPID/DRILL FEED"}
+      - {pin: 16, type: "output", pdo_mapping: "unknown", signal: "H446 LED YELLOW IMPACT PRESSURE"}
+
+  - node_id: 4
+    node_id_hex: "0x04"
+    name: "D551"
+    kind: "remote_io"
+    presence: "heartbeat and PDO traffic observed"
+    confidence: "confirmed"
+    functions:
+      - "Drilling air and drill supports"
+      - "Right-hand rod manipulator, carousel, and gripper"
+      - "Rod string, hood, DCT hatch, sleeve retainer, and rotation lock controls"
+    canopen:
+      heartbeat: "0x704"
+      observed_rpdos: ["0x204 (RPDO1, 8 bytes)"]
+      observed_tpdos: ["0x184 (TPDO1, 2 bytes)", "0x284 (TPDO2, 8 bytes)"]
+      input_mapping_profile: "io_x3_digital_inputs"
+    x3_channels:
+      - {pin: 1, type: "input", byte: 0, bit: 0, signal: "S100-A3 SWITCH FLUSH AIR"}
+      - {pin: 2, type: "input", byte: 0, bit: 1, signal: "S111-64 MANIPULATOR RHS ARM TO CAROUSEL"}
+      - {pin: 3, type: "input", byte: 0, bit: 2, signal: "S111-24 MANIPULATOR RHS ARM TO DRILL CENTER"}
+      - {pin: 4, type: "input", byte: 0, bit: 3, signal: "S111-54 MANIPULATOR RHS CAROUSEL ROT. CW"}
+      - {pin: 5, type: "input", byte: 0, bit: 4, signal: "S111-34 MANIPULATOR RHS CAROUSEL ROT. CCW"}
+      - {pin: 6, type: "input", byte: 0, bit: 5, signal: "S111-4 MANIPULATOR RHS OPEN GRIPPER"}
+      - {pin: 7, type: "input", byte: 0, bit: 6, signal: "S119-A1 SWITCH DRILL SUPPORT UPPER OPEN"}
+      - {pin: 8, type: "input", byte: 0, bit: 7, signal: "S119-A3 SWITCH DRILL SUPPORT UPPER CLOSE"}
+      - {pin: 9, type: "input", byte: 1, bit: 0, signal: "S113-A3 SWITCH TAKE UP ROD STRING"}
+      - {pin: 10, type: "input", byte: 1, bit: 1, signal: "S167-A1 SWITCH HOOD UP"}
+      - {pin: 11, type: "input", byte: 1, bit: 2, signal: "S167-A3 SWITCH HOOD DOWN"}
+      - {pin: 12, type: "input", byte: 1, bit: 3, signal: "S181-A3 SWITCH OPEN DCT HATCH"}
+      - {pin: 13, type: "input", byte: 1, bit: 4, signal: "S182-A3 SWITCH SLEEVE RETAINER"}
+      - {pin: 14, type: "input", byte: 1, bit: 5, signal: "S187-A1 SWITCH DRILL SUPPORT LOWER OPEN"}
+      - {pin: 15, type: "input", byte: 1, bit: 6, signal: "S187-A3 SWITCH DRILL SUPPORT LOWER CLOSE"}
+      - {pin: 16, type: "input", byte: 1, bit: 7, signal: "S257A3 SWITCH ROC DRILL LOCK ROTATION"}
+
+  - node_id: 5
+    node_id_hex: "0x05"
+    name: "D553"
+    kind: "remote_io"
+    presence: "heartbeat and PDO traffic observed"
+    confidence: "confirmed"
+    functions:
+      - "Wrench and drill brake controls"
+      - "Impact stroke position"
+      - "Left and right tramming joystick inputs"
+    canopen:
+      heartbeat: "0x705"
+      observed_rpdos: ["0x205 (RPDO1, 8 bytes)"]
+      observed_tpdos: ["0x185 (TPDO1, 2 bytes)", "0x285 (TPDO2, four decoded joystick uint16 values)"]
+      input_mapping_profile: "io_x3_digital_inputs"
+      tpdo2_mapping_profile: "d553_tpdo2_tramming_joysticks"
+    x3_channels:
+      - {pin: 1, type: "input", byte: 0, bit: 0, signal: "S258-A1 SWITCH WRENCH CCW"}
+      - {pin: 2, type: "input", byte: 0, bit: 1, signal: "S258-A3 SWITCH WRENCH CW"}
+      - {pin: 3, type: "input", byte: 0, bit: 2, signal: "S259-A3 SWITCH BRAKE LOWER OPEN/CLOSE"}
+      - {pin: 4, type: "input", byte: 0, bit: 3, signal: "S260-A3 SWITCH BRAKE UPPER OPEN/CLOSE"}
+      - {pin: 5, type: "ground", signal: "GND"}
+      - {pin: 6, type: "ground", signal: "GND"}
+      - {pin: 7, type: "input", byte: 0, bit: 6, signal: "S400-A3 SWITCH STROKE POSITION IMPACT"}
+      - {pin: 8, type: "ground", signal: "GND"}
+      - {pin: 9, type: "ground", signal: "GND"}
+      - {pin: 10, type: "ground", signal: "GND"}
+      - {pin: 11, type: "ground", signal: "GND"}
+      - {pin: 12, type: "ground", signal: "GND"}
+      - {pin: 13, type: "input", byte: 1, bit: 4, signal: "S174A JOYSTICK TRAMMING LEFT"}
+      - {pin: 14, type: "input", byte: 1, bit: 5, signal: "S175A JOYSTICK TRAMMING RIGHT"}
+      - {pin: 15, type: "ground", signal: "GND"}
+      - {pin: 16, type: "ground", signal: "GND"}
+    analog_inputs:
+      - {connector: "X1", contact: 11, signal: "S174A TRAMMING LEFT FORWARD", raw_unit: "RM", engineering_unit: "percent", hmi_sample: {raw: 62, engineering: 50.0}}
+      - {connector: "X1", contact: 12, signal: "S174B TRAMMING LEFT BACKWARD", raw_unit: "RM", engineering_unit: "percent", hmi_sample: {raw: 62, engineering: 50.0}}
+      - {connector: "X2", contact: 11, signal: "S175A TRAMMING RIGHT FORWARD", raw_unit: "RM", engineering_unit: "percent", hmi_sample: {raw: 64, engineering: 51.7}}
+      - {connector: "X2", contact: 12, signal: "S175B TRAMMING RIGHT BACKWARD", raw_unit: "RM", engineering_unit: "percent", hmi_sample: {raw: 60, engineering: 48.3}}
+    review_notes:
+      - "The four X1/X2 analog joystick channels are distinct from the S174A/S175A-related X3 contacts shown by the schematic; do not merge connector numbering."
+      - "TPDO2 0x285 is decoded at high confidence, but a synchronized full-stroke capture is still required to confirm endpoints and clipping."
+
+  - node_id: 6
+    node_id_hex: "0x06"
+    name: "D552"
+    kind: "remote_io"
+    presence: "heartbeat and PDO traffic observed"
+    confidence: "confirmed"
+    functions:
+      - "Drill/tramming mode selection"
+      - "Track oscillation tilt"
+      - "Compressor load, cabin horn, and hydraulic jack controls"
+      - "Water-mist flow feedback"
+    canopen:
+      heartbeat: "0x706"
+      observed_rpdos: ["0x206 (RPDO1, 8 bytes)"]
+      observed_tpdos: ["0x186 (TPDO1, 2 bytes)", "0x286 (TPDO2, S272 decoded at byte 6)"]
+      input_mapping_profile: "io_x3_digital_inputs"
+      tpdo2_mapping_profile: "d552_tpdo2_watermist_flow"
+    x3_channels:
+      - {pin: 1, type: "input", byte: 0, bit: 0, signal: "S130-1 SWITCH DRILL MODE"}
+      - {pin: 2, type: "input", byte: 0, bit: 1, signal: "S130-3 SWITCH TRAMMING LOW SPEED"}
+      - {pin: 3, type: "input", byte: 0, bit: 2, signal: "S130-5 SWITCH TRAMMING HIGH SPEED"}
+      - {pin: 4, type: "input", byte: 0, bit: 3, signal: "S130-7 SWITCH PREHEATING POSITION"}
+      - {pin: 5, type: "input", byte: 0, bit: 4, signal: "S176-A1 SWITCH TRACK OSCILLATION TILT LEFT FW"}
+      - {pin: 6, type: "input", byte: 0, bit: 5, signal: "S176-A3 SWITCH TRACK OSCILLATION TILT LEFT BW"}
+      - {pin: 7, type: "input", byte: 0, bit: 6, signal: "S177-A1 SWITCH TRACK OSCILLATION TILT RIGHT FW"}
+      - {pin: 8, type: "input", byte: 0, bit: 7, signal: "S177-A3 SWITCH TRACK OSCILLATION TILT RIGHT BW"}
+      - {pin: 9, type: "input", byte: 1, bit: 0, signal: "S180-A3 SWITCH COMPRESSOR LOAD"}
+      - {pin: 10, type: "input", byte: 1, bit: 1, signal: "S186-A3 SWITCH WARNING SIGNAL CABIN", verification: "confirmed by horn log"}
+      - {pin: 11, type: "input", byte: 1, bit: 2, signal: "S209-A1 SWITCH HYDRAULIC JACK IN"}
+      - {pin: 12, type: "input", byte: 1, bit: 3, signal: "S209-A3 SWITCH HYDRAULIC JACK OUT"}
+      - {pin: 13, type: "ground", signal: "GND"}
+      - {pin: 14, type: "ground", signal: "GND"}
+      - {pin: 15, type: "ground", signal: "GND"}
+      - {pin: 16, type: "ground", signal: "GND"}
+    analog_inputs:
+      - {connector: "X2", contact: 12, signal: "S272 WATER MIST FLOW", raw_unit: "RM", engineering_unit: "percent", hmi_sample: {raw: 9, engineering: 0.0}, can_mapping: "0x286 byte 6 uint16_le", confidence: "high"}
+
+  - node_id: 7
+    node_id_hex: "0x07"
+    name: "D554"
+    kind: "remote_io"
+    presence: "heartbeat and PDO traffic observed"
+    confidence: "confirmed"
+    functions:
+      - "Track oscillation floating mode"
+      - "Watermist and brush greasing modes"
+      - "Engine speed adjustment and delayed engine shutdown"
+    canopen:
+      heartbeat: "0x707"
+      observed_rpdos: ["0x207 (RPDO1, 8 bytes)"]
+      observed_tpdos: ["0x187 (TPDO1, 2 bytes)", "0x287 (TPDO2, 8 bytes)"]
+      input_mapping_profile: "io_x3_digital_inputs"
+    x3_channels:
+      - {pin: 1, type: "ground", signal: "GND"}
+      - {pin: 2, type: "input", byte: 0, bit: 1, signal: "S445-A3 SWITCH TRACK OSCILLATION FLOATING"}
+      - {pin: 3, type: "input", byte: 0, bit: 2, signal: "S448-A1 SWITCH WATERMIST MAN"}
+      - {pin: 4, type: "input", byte: 0, bit: 3, signal: "S448-43 SWITCH WATERMIST AUTO"}
+      - {pin: 5, type: "ground", signal: "GND"}
+      - {pin: 6, type: "ground", signal: "GND"}
+      - {pin: 7, type: "ground", signal: "GND"}
+      - {pin: 8, type: "ground", signal: "GND"}
+      - {pin: 9, type: "input", byte: 1, bit: 0, signal: "S449-A3 SWITCH BRUSH GREASING MAN", review: "designation duplicates pin 10 in supplied schematic extraction"}
+      - {pin: 10, type: "input", byte: 1, bit: 1, signal: "S449-A3 SWITCH BRUSH GREASING AUTO", review: "verify whether contact suffix should be A1/A3 or another value"}
+      - {pin: 11, type: "input", byte: 1, bit: 2, signal: "S189-A3 SWITCH ENGINE SPEED INC"}
+      - {pin: 12, type: "input", byte: 1, bit: 3, signal: "S189-A1 SWITCH ENGINE SPEED DEC"}
+      - {pin: 13, type: "ground", signal: "GND"}
+      - {pin: 14, type: "ground", signal: "GND"}
+      - {pin: 15, type: "input", byte: 1, bit: 6, signal: "DELAYED ENGINE SHUTDOWN (DES), K303 IN A1"}
+      - {pin: 16, type: "ground", signal: "GND"}
+
+  - node_id: 16
+    node_id_hex: "0x10"
+    name: "CPU1"
+    kind: "controller"
+    presence: "heartbeat and all four RPDO/TPDO channels observed"
+    confidence: "confirmed"
+    functions:
+      - "Tramming, drilling pressure, feed, and air-control functions"
+      - "Transfer arm, gripper, and hydraulic-jack functions"
+      - "Pitch/roll inclinometer inputs"
+      - "Participates in the A1 diesel-engine power/ignition interface"
+    canopen:
+      heartbeat: "0x710"
+      observed_rpdos: ["0x210", "0x310", "0x410", "0x510"]
+      observed_tpdos: ["0x190 (decoded Y206/Y207 PWM actual currents)", "0x290", "0x390", "0x490"]
+      tpdo1_mapping_profile: "cpu1_tpdo1_tramming_pwm_feedback"
+      rpdo4: "3-byte fast process image, stable in horn log"
+    physical_connections:
+      - {pin: 5, name: "VBB", role: "output-stage supply", fuse: "F15 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+      - {pin: 34, name: "VBBR", role: "relay/output supply", fuse: "F17 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+      - {pin: 23, name: "VBBS1", role: "module and supply-voltage sense", fuse: "F14-1 3 A", source: "schematic sheet 06(47)", confidence: "confirmed"}
+      - {pin: 30, path: "F1/2 fused engine-ECM supply -> X10/8 -> CPU1/30", role: "engine-ECM battery supply sense; exact software name unknown", source: "schematic sheet 07(47)", confidence: "inferred"}
+      - {device: "K178", role: "CPU1 output supply relay", supply: "F16 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+    physical_inputs:
+      - {pin: 55, device: "B134", signal: "ROTATION PRESSURE", input_type: "digital_pressure_switch", sheet: "25(47)"}
+      - {pin: 19, device: "B128", signal: "PAUSE DEPTH SYSTEM", input_type: "digital_pressure_switch", sheet: "25(47)"}
+      - {pin: 8, device: "B382", signal: "ECL COLLECTION HIGH", input_type: "digital_pressure_switch", sheet: "25(47)"}
+      - {pin: 18, device: "B142", signal: "AIR FLOW SWITCH", input_type: "digital_switch", sheet: "26(47)"}
+      - {pin: 11, device: "B184", signal: "HYDRAULIC JACK IN", input_type: "digital_proximity_switch", sheet: "26(47)"}
+      - {pin: 37, device: "B143", signal: "HYDRAULIC OIL LEVEL", input_type: "digital_level_switch", sheet: "28(47)"}
+      - {pin: 28, device: "B409B", signal: "PITCH X", input_type: "analog_inclinometer", analog: true, applicability: "ONLY DTH", electrical_range: "unknown", engineering_unit: "degree", displayed_resolution: 0.1, sheet: "28(47)"}
+      - {pin: 29, device: "B409B", signal: "ROLL Y", input_type: "analog_inclinometer", analog: true, applicability: "ONLY DTH", electrical_range: "unknown", engineering_unit: "degree", displayed_resolution: 0.1, sheet: "28(47)"}
+      - {pin: 27, device: "B119", signal: "ARM IN MIDDLE POSITION", input_type: "digital_proximity_switch", sheet: "29(47)"}
+      - {pin: 9, device: "B120", signal: "ARM IN DRILL CENTER", input_type: "digital_proximity_switch", sheet: "29(47)"}
+      - {pin: 10, device: "B118", signal: "ARM IN CAROUSEL", input_type: "digital_proximity_switch", sheet: "31(47)"}
+      - {pin: 38, device: "K302", signal: "IGNITION SIGNAL", input_type: "digital_relay_feedback", sheet: "42(47)"}
+    physical_outputs:
+      - {pin: 39, signals: ["Y101A IMPACT ON"], sheet: "32(47)"}
+      - {pin: 5, signals: ["Y176 BYPASS MIN DAMPER (TH)", "Y552B SPRAY GREASING AIR (DTH/CR)"], sheet: "32(47)", note: "also shown as the VBB supply terminal on sheet 04(47); this may be a supply fan-out rather than a software-switched output"}
+      - {pin: 41, signals: ["Y121A TRAMMING MODE", "Y115 FLUSH AIR FULL"], sheets: ["32(47)", "36(47)"], note: "shared output/fan-out or machine-variant wiring"}
+      - {pin: 42, signals: ["Y122 TRAMMING HIGH SPEED"], sheet: "32(47)"}
+      - {pin: 43, signals: ["Y101C DRILL FEED LOW PRESSURE"], sheet: "32(47)"}
+      - {pin: 40, signals: ["Y109 ANTI JAMMING"], sheet: "33(47)"}
+      - {pin: 22, signals: ["Y120A/Y120B/Y120C PRE-HEATING HYDRAULIC OIL"], sheet: "33(47)"}
+      - {pin: 49, signals: ["K178 RAPID FEED/THREADING RELAY"], sheet: "33(47)"}
+      - {pin: 44, signals: ["Y206A TRAMMING LEFT FORWARD"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual: 0, requested: 0}, sheet: "34(47)"}
+      - {pin: 45, signals: ["Y206B TRAMMING LEFT BACKWARD"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual: 0, requested: 0}, sheet: "34(47)"}
+      - {pin: 46, signals: ["Y207A TRAMMING RIGHT FORWARD"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual: 0, requested: 0}, sheet: "34(47)"}
+      - {pin: 47, signals: ["Y207B TRAMMING RIGHT BACKWARD"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual: 4, requested: 0}, sheet: "34(47)"}
+      - {pin: 52, signals: ["Y410A HYDRAULIC JACK OUT"], sheet: "34(47)"}
+      - {pin: 16, signals: ["Y410B HYDRAULIC JACK IN"], sheet: "34(47)"}
+      - {pin: 36, signals: ["Y169 ENABLE TRAMMING MODE", "K226 ENABLE BEACON BRANCH"], sheet: "35(47)"}
+      - {pin: 20, signals: ["H185 REVERSE AND WARNING SIGNAL CIRCUIT"], sheet: "37(47)", note: "second H185 connection; exact high-side/low-side behavior is not established"}
+      - {pin: 48, signals: ["Y210B COMPRESSOR HIGH-PRESSURE STAGE"], applicability: "ONLY DTH", sheet: "38(47)"}
+      - {pin: 4, signals: ["Y107 ECG (TH)", "Y165 HECL (DTH/CR)"], sheet: "38(47)"}
+      - {pin: 50, signals: ["Y301A TRANSFER ARM TO CAROUSEL"], sheet: "39(47)"}
+      - {pin: 51, signals: ["Y301B TRANSFER ARM TO DRILL CENTER"], sheet: "39(47)"}
+      - {pin: 31, signals: ["Y300 GRIPPER OPEN"], sheet: "40(47)"}
+      - {pin: 35, signals: ["Y306 RODGRIPPER LOOSE GRIP"], sheet: "40(47)"}
+      - {pin: 54, signals: ["K18 DIESEL REFUELLING PUMP RELAY"], sheet: "42(47)"}
+      - {pin: 17, signals: ["K200 REMOTE SHUT DOWN RELAY"], sheet: "42(47)"}
+      - {pin: 53, signals: ["K5 STARTER RELAY"], sheet: "42(47)"}
+
+  - node_id: 17
+    node_id_hex: "0x11"
+    name: "CPU3"
+    kind: "controller"
+    presence: "heartbeat and all four RPDO/TPDO channels observed"
+    confidence: "confirmed"
+    functions:
+      - "Depth, laser, temperature, and drilling-feed sensing"
+      - "DCT filter cleaning, water-mist, cooling, and drill-lock functions"
+      - "Receives the routed cabin warning/horn request in RPDO4"
+    canopen:
+      heartbeat: "0x711"
+      observed_rpdos: ["0x211", "0x311", "0x411", "0x511"]
+      observed_tpdos: ["0x191", "0x291", "0x391", "0x491"]
+      rpdo4: "3-byte fast process image; horn-correlated bit identified"
+    physical_connections:
+      - {pin: 5, name: "VBB", role: "output-stage supply", fuse: "F21 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+      - {pin: 34, name: "VBBR", role: "relay/output supply", fuse: "F22 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+      - {pin: 23, name: "VBBS3", role: "module and supply-voltage sense", fuse: "F14-3 3 A", source: "schematic sheet 06(47)", confidence: "confirmed"}
+    physical_inputs:
+      - {pin: 38, device: "B262", signal: "DRILL FEED BACKWARDS", input_type: "digital_pressure_switch", sheet: "25(47)"}
+      - {pin: 10, device: "B362", signal: "HYDRAULIC OIL TEMP", input_type: "analog_temperature", analog: true, electrical_range: "4-20 mA", engineering_range: "-50..150 degC", scaling_profile: "temperature_4_20ma_minus50_150c", hmi_sample: {current_uA: 8439, temperature_degC: 5}, sheet: "28(47)"}
+      - {pin: 29, device: "B366A", signal: "COMPRESSOR TEMP HIGH STAGE", input_type: "analog_temperature", analog: true, electrical_range: "4-20 mA", engineering_range: "-50..150 degC", scaling_profile: "temperature_4_20ma_minus50_150c", hmi_sample: {current_uA: 8381, temperature_degC: 5}, sheet: "28(47)"}
+      - {pin: 11, device: "B366B", signal: "COMPRESSOR TEMP LOW STAGE", input_type: "analog_temperature", analog: true, electrical_range: "4-20 mA", engineering_range: "-50..150 degC", scaling_profile: "temperature_4_20ma_minus50_150c", hmi_sample: {current_uA: 8342, temperature_degC: 4}, sheet: "28(47)"}
+      - {pin: 28, device: "B147", signal: "AMBIENT TEMP", input_type: "analog_temperature", analog: true, electrical_range: "4-20 mA", engineering_range: "-50..150 degC", scaling_profile: "temperature_4_20ma_minus50_150c", hmi_sample: {current_uA: 8052, temperature_degC: 1}, sheet: "28(47)"}
+      - {pin: 55, device: "B104", signal: "CALIBRATION DEPTH", input_type: "digital_proximity_switch", sheet: "29(47)"}
+      - {pins: [2, 20], device: "B172", signal: "DEPTH ENCODER A/B", input_type: "digital_encoder", engineering_unit: "m", schematic_note: "two CPU channels are shown; exact A/B-to-pin assignment is not proven", field_hmi: {channel: "B172_1", reported_contact: 37, raw: 50760, raw_unit: "P", engineering: 2.599, engineering_unit: "m"}, conflict: "field HMI reports CPU3 contact 37 while sheets 29(47)/30(47) show B172 at pins 2/20 and pin 37 as spare", sheet: "29(47)"}
+      - {pin: 16, device: "B178", signal: "ROD IN CAROUSEL OUTLET", input_type: "digital_proximity_switch", sheet: "29(47)", note: "CPU3 pin 16 is also shown driving Y253 on sheet 36(47); likely configuration-dependent wiring or a schematic conflict"}
+      - {pin: 27, device: "B316", signal: "LASER SENSOR", input_type: "digital_optical_sensor", note: "drawn with the same three-wire switching-sensor symbol as B182/B183; no analog output is stated", sheet: "30(47)"}
+    physical_outputs:
+      - {pin: 45, signals: ["Y149 RAPID FEED STOP BACKWARDS"], sheet: "32(47)"}
+      - {pin: 54, signals: ["Y150 RAPID FEED STOP FORWARD"], sheet: "32(47)"}
+      - {pin: 40, signals: ["Y112A WATERMIST AUTO"], sheet: "32(47)"}
+      - {pin: 36, signals: ["Y121B PUMP 4"], sheet: "32(47)"}
+      - {pin: 22, signals: ["Y112B WATERMIST MANUAL"], sheet: "32(47)"}
+      - {pin: 43, signals: ["Y175 STROKE POSITION IMPACT"], sheet: "35(47)"}
+      - {pin: 49, signals: ["Y250 DCT ON"], sheet: "36(47)"}
+      - {pin: 16, signals: ["Y253 DCT OUTLET"], sheet: "36(47)", note: "CPU3 pin 16 is also shown receiving B178 on sheet 29(47); likely configuration-dependent wiring or a schematic conflict"}
+      - {pin: 31, signals: ["Y251A DCT FILTER 1 CLEANING"], sheet: "36(47)"}
+      - {pin: 50, signals: ["Y251B DCT FILTER 2 CLEANING"], sheet: "36(47)"}
+      - {pin: 51, signals: ["Y251C DCT FILTER 3 CLEANING"], sheet: "36(47)"}
+      - {pin: 52, signals: ["Y251D DCT FILTER 4 CLEANING"], sheet: "36(47)"}
+      - {pin: 42, signals: ["Y116 FLUSH AIR REDUCED"], sheet: "36(47)"}
+      - {pin: 3, signals: ["Y112C WATER MIST DRAINAGE", "K116 OPTION RC BRANCH"], sheet: "36(47)"}
+      - {pin: 53, signals: ["Y501 COOLING FAN DIESEL MOTOR"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual: 599, requested: 600}, sheet: "37(47)"}
+      - {pin: 44, signals: ["Y504 COOLING FAN HYDRAULIC OIL AND COMPRESSOR OIL"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual_approx: 596, requested: 600}, sheet: "37(47)", correction: "HMI and schematic source line identify CPU3 pin 44; previous CPU1 attribution was incorrect"}
+      - {pin: 17, signals: ["H185 REVERSE AND WARNING SIGNAL CIRCUIT", "24V/H186 FRONT HORN WARNING FEED"], sheets: ["37(47)", "32(47)"], note: "the 24V/H186 cross-reference feeds H186; the H185 circuit also has a CPU1 pin 20 connection"}
+      - {pin: 4, signals: ["Y186 BLOW OFF"], sheet: "38(47)"}
+      - {pin: 35, signals: ["Y210A COMPRESSOR LOAD"], sheet: "38(47)"}
+      - {pin: 46, signals: ["Y359 ROCK DRILL LOCK ROTATION"], sheet: "40(47)"}
+      - {pin: 48, signals: ["Y311A ROTARY GRIPPER TO DRILL CENTER"], sheet: "40(47)"}
+      - {pin: 47, signals: ["Y311B ROTARY GRIPPER TO DRILL CAROUSEL"], sheet: "40(47)"}
+
+  - node_id: 19
+    node_id_hex: "0x13"
+    name: "CPU2"
+    kind: "controller_and_gateway_candidate"
+    presence: "heartbeat and all four RPDO/TPDO channels observed"
+    confidence: "confirmed"
+    functions:
+      - "Diesel, compressor, vessel-pressure, and fuel-level sensing"
+      - "Boom-swing encoder and carousel/support/wrench/brake functions"
+      - "Strong gateway candidate between the machine CANopen bus and engine J1939 bus; forwarding is not yet proven"
+    canopen:
+      heartbeat: "0x713"
+      observed_rpdos: ["0x213", "0x313", "0x413", "0x513"]
+      observed_tpdos: ["0x193", "0x293", "0x393", "0x493"]
+      rpdo4: "3-byte fast process image, stable in horn log"
+    physical_connections:
+      - {pin: 5, name: "VBB", role: "output-stage supply", fuse: "F18 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+      - {pin: 34, name: "VBBR", role: "relay/output supply", fuse: "F19 7.5 A", source: "schematic sheet 04(47)", confidence: "confirmed"}
+      - {pin: 23, name: "VBBS2", role: "module and supply-voltage sense", fuse: "F14-2 3 A", source: "schematic sheet 06(47)", confidence: "confirmed"}
+      - {pin: 26, name: "J1939 CAN+", role: "engine J1939 high", source: "schematic sheet 07(47)", confidence: "confirmed"}
+      - {pin: 25, name: "J1939 CAN-", role: "engine J1939 low", source: "schematic sheet 07(47)", confidence: "confirmed"}
+    physical_inputs:
+      - {pins: [21, 38, 2], device: "B301", signal: "BOOM SWING ENCODER A/B/Z", input_type: "digital_encoder", pin_assignment: {A: 21, B: 38, Z: 2}, engineering_unit: "degree", field_hmi: {A: {contact: 21, raw: 0, raw_unit: "P", engineering: 0.0}, Z: {contact: 2, raw: 0, raw_unit: "pulse", engineering: 0}}, sheet: "25(47)"}
+      - {pin: 19, device: "B381", signal: "ECL COLLECTION LOW", input_type: "digital_pressure_switch", sheet: "25(47)"}
+      - {pin: 11, device: "B360", signal: "AIR FILTER DIESEL", input_type: "digital_pressure_switch", sheet: "26(47)"}
+      - {pin: 55, device: "B457", signal: "WATER MIST TANK LEVEL", input_type: "digital_level_switch", sheet: "26(47)"}
+      - {pin: 18, device: "B380", signal: "ECL OIL LEVEL", input_type: "digital_level_switch", sheet: "26(47)"}
+      - {pin: 30, device: "B365", signal: "AIR FILTER COMPRESSOR", input_type: "digital_pressure_switch", sheet: "26(47)"}
+      - {pin: 28, device: "B456", signal: "VESSEL PRESSURE", input_type: "analog_pressure_voltage", analog: true, raw_unit: "mV", engineering_unit: "bar", hmi_sample: {raw_mV: 475, pressure_bar: 0.0}, likely_nominal_range: "0.5-4.5 V", range_confidence: "inferred", sheet: "27(47)"}
+      - {pin: 9, device: "B460", signal: "COMPRESSOR OIL STOP VALVE PRESSURE", input_type: "analog_pressure_current", analog: true, raw_unit: "uA", engineering_unit: "bar", hmi_sample: {raw_uA: 7342, pressure_bar: -0.16, status: "OK"}, correction: "HMI proves this is an analog current input, not a digital pressure switch", sheet: "27(47)"}
+      - {pin: 29, device: "B352", signal: "DIESEL LEVEL", input_type: "analog_resistive_level", analog: true, raw_unit: "RM", engineering_unit: "percent", hmi_sample: {raw_RM: 132, level_percent: 88}, scaling_candidate: "level_percent = raw_RM / 1.5", scaling_confidence: "inferred from one point", sheet: "28(47)"}
+      - {pin: 37, device: "B182", signal: "CAROUSEL INDEX CCW", input_type: "digital_proximity_switch", sheet: "30(47)"}
+      - {pin: 8, device: "B183", signal: "CAROUSEL INDEX CW", input_type: "digital_proximity_switch", sheet: "30(47)"}
+    physical_outputs:
+      - {pin: 47, signals: ["Y101B IMPACT LOW PRESSURE"], sheet: "32(47)"}
+      - {pin: 44, signals: ["Y419A TRACK OSCILLATION LEFT TILT BACKWARD"], sheet: "34(47)"}
+      - {pin: 45, signals: ["Y419B TRACK OSCILLATION LEFT TILT FORWARD"], sheet: "34(47)"}
+      - {pin: 51, signals: ["Y420A TRACK OSCILLATION RIGHT TILT BACKWARD"], sheet: "34(47)"}
+      - {pin: 52, signals: ["Y420B TRACK OSCILLATION RIGHT TILT FORWARD"], sheet: "34(47)"}
+      - {pin: 16, signals: ["Y473 TRACK OSCILLATION LOCK"], sheet: "34(47)"}
+      - {pin: 35, signals: ["Y552A SPRAY GREASING/GREASE PUMP"], sheet: "35(47)"}
+      - {pin: 46, signals: ["Y112D WATER MIST WATER FLOW"], output_type: "pwm_current", engineering_unit: "mA", hmi_sample: {actual: 0, requested: 0}, sheet: "37(47)"}
+      - {pin: 48, signals: ["Y303A CAROUSEL ROTATION CCW"], sheet: "39(47)"}
+      - {pin: 49, signals: ["Y303B CAROUSEL ROTATION CW"], sheet: "39(47)"}
+      - {pin: 36, signals: ["Y350A SUPPORT LOWER OPEN"], sheet: "39(47)"}
+      - {pin: 54, signals: ["Y350B SUPPORT LOWER CLOSED"], sheet: "39(47)"}
+      - {pin: 41, signals: ["Y357A HOOD UP"], sheet: "39(47)"}
+      - {pin: 42, signals: ["Y357B HOOD DOWN"], sheet: "39(47)"}
+      - {pin: 43, signals: ["Y361A SUPPORT UPPER OPEN"], sheet: "39(47)"}
+      - {pin: 4, signals: ["Y361B SUPPORT UPPER CLOSED"], sheet: "39(47)"}
+      - {pin: 50, signals: ["Y310 CAROUSEL OUTLET OPEN"], sheet: "40(47)"}
+      - {pin: 17, signals: ["Y352A WRENCH CW"], sheet: "40(47)"}
+      - {pin: 53, signals: ["Y352B WRENCH CCW"], sheet: "40(47)"}
+      - {pin: 39, signals: ["Y354A BRAKE LOWER OPEN"], schematic_text: "BREAK LOWER OPEN", sheet: "40(47)"}
+      - {pin: 3, signals: ["Y354B BRAKE LOWER CLOSED"], schematic_text: "BREAK LOWER CLOSED", sheet: "40(47)"}
+      - {pin: 40, signals: ["Y356A BRAKE UPPER OPEN"], schematic_text: "BREAK UPPER OPEN", sheet: "40(47)"}
+      - {pin: 22, signals: ["Y356B BRAKE UPPER CLOSED"], schematic_text: "BREAK UPPER CLOSED", sheet: "40(47)"}
+      - {pin: 31, signals: ["Y309 SLEEVE RETAINER"], sheet: "41(47)"}
+
+analog_pdo_candidates:
+  scope: "Zero-based byte offsets; all mapped fields below are little-endian uint16 words."
+  warning: "HMI photos and CAN logs were captured at different times. Unit/domain matching is strong, but synchronized perturbation is still required before treating high-confidence mappings as production facts."
+  CPU1:
+    physical_analog_sources: ["B409B PITCH X / pin 28", "B409B ROLL Y / pin 29"]
+    observation: "No remaining TPDO contains an unambiguous pair that can safely be assigned to the two inclinometer axes; 0x190 is now decoded as PWM current feedback."
+    other_observed_change:
+      cob_id: "0x490"
+      frame_count: 58
+      unique_payloads: 2
+      word: {byte: 2, length: 2, byte_order: "little", observed_raw_range: [0, 15]}
+      interpretation: "Discrete 0/15 behavior is more consistent with flags or a small state value than with two inclinometer axes."
+    confidence: "unknown"
+  CPU2:
+    physical_analog_sources: ["B456 VESSEL PRESSURE / pin 28", "B460 COMPRESSOR OIL STOP VALVE PRESSURE / pin 9", "B352 DIESEL LEVEL / pin 29"]
+    likely_mappings:
+      - signal: "B460 COMPRESSOR OIL STOP VALVE PRESSURE"
+        cob_id: "0x393"
+        word: {byte: 4, length: 2, raw_unit: "uA", observed_raw_range: [19301, 19320]}
+        hmi_reference: {raw_uA: 7342, pressure_bar: -0.16}
+        rationale: "The CAN range is valid for a 4-20 mA channel and is the only CPU2 word in microamp scale."
+      - signal: "B456 VESSEL PRESSURE"
+        cob_id: "0x393"
+        word: {byte: 6, length: 2, raw_unit: "mV", observed_raw_range: [906, 911]}
+        hmi_reference: {raw_mV: 475, pressure_bar: 0.0}
+        rationale: "The CAN range is valid for the voltage pressure channel and is the only CPU2 word in millivolt scale."
+      - signal: "B352 DIESEL LEVEL"
+        cob_id: "0x493"
+        word: {byte: 2, length: 2, raw_unit: "RM", observed_raw_range: [117, 118]}
+        hmi_reference: {raw_RM: 132, level_percent: 88}
+        rationale: "The CAN word is in the same raw RM domain and changes slowly like a fuel-level sender."
+    confidence: "high for raw channel identity; engineering pressure scaling remains unknown"
+  CPU3:
+    physical_analog_sources: ["B362 HYDRAULIC OIL TEMP / pin 10", "B366A COMPRESSOR TEMP HIGH STAGE / pin 29", "B366B COMPRESSOR TEMP LOW STAGE / pin 11", "B147 AMBIENT TEMP / pin 28"]
+    likely_mappings:
+      - {signal: "B147 AMBIENT TEMP", cob_id: "0x391", byte: 6, raw_unit: "uA", observed_raw_range: [8187, 8205], derived_degC_range: [2.34, 2.56]}
+      - {signal: "B362 HYDRAULIC OIL TEMP", cob_id: "0x491", byte: 0, raw_unit: "uA", observed_raw_range: [11325, 11349], derived_degC_range: [41.56, 41.86]}
+      - {signal: "B366A COMPRESSOR TEMP HIGH STAGE", cob_id: "0x491", byte: 2, raw_unit: "uA", observed_raw_range: [11652, 11664], derived_degC_range: [45.65, 45.8]}
+      - {signal: "B366B COMPRESSOR TEMP LOW STAGE", cob_id: "0x491", byte: 4, raw_unit: "uA", observed_raw_range: [11562, 11574], derived_degC_range: [44.53, 44.68]}
+    scaling_profile: "temperature_4_20ma_minus50_150c"
+    rationale: "One isolated ambient-temperature word plus three adjacent hydraulic/compressor words exactly fill the four HMI-confirmed 4-20 mA temperature channels and produce plausible temperatures."
+    confidence: "high"
+
+pwm_feedback_candidates:
+  CPU1:
+    mapping_profile: "cpu1_tpdo1_tramming_pwm_feedback"
+    confidence: "high"
+  CPU3:
+    likely_mappings:
+      - signal: "Y501 COOLING FAN DIESEL MOTOR actual current"
+        cob_id: "0x291"
+        word: {byte: 6, length: 2, raw_unit: "mA", observed_raw_range: [599, 603]}
+        hmi_reference: {actual_mA: 599, requested_mA: 600}
+        confidence: "high"
+      - signal: "Y504 COOLING FAN HYDRAULIC OIL AND COMPRESSOR OIL actual current"
+        cob_id: "0x191"
+        word: {byte: 0, length: 2, raw_unit: "mA", observed_raw_range: [488, 492]}
+        hmi_reference: {actual_mA_approx: 596, requested_mA: 600}
+        confidence: "inferred; unit and node match, but values are from different operating conditions"
+
+hmi_process_observations:
+  D171:
+    bus: "CAN2"
+    location_label: "CAN 2 D171"
+    signals:
+      - {name: "feed-beam deviation rotation", engineering_value: 0.0, engineering_unit: "degree", raw: 0, contact: 0}
+      - {name: "feed-beam deviation tilt", engineering_value: 0.2, engineering_unit: "degree", raw: -2, contact: 0}
+    scaling_candidate: "tilt_deg = -raw / 10"
+    confidence: "inferred from one non-zero sample"
+  angle_display:
+    observed_values_deg: [0.2, 0.1]
+    target_values_deg: [0.0, 0.0]
+    display_resolution_deg: 0.1
+    attribution: "likely D171 feed-beam angles or B409B pitch/roll; the operator page does not show signal names"
+  drilling_display_ranges:
+    hydraulic_and_compressor_temperatures_degC: [-50, 150]
+    coolant_temperature_degC: [0, 120]
+    watermist_flow_percent: [0, 100]
+    depth_unit: "m"
+    feed_speed_unit: "m/min"
+  operational_metric_units:
+    observed: ["l", "h", "l/h", "l/m", "m", "RPM", "V", "bar", "percent"]
+    note: "These operator-page values are useful decode targets but cannot yet be assigned to CAN0 PDOs; several may originate from J1939 or display-retained counters."
+
+pdo_shaped_endpoints:
+  description: "These IDs decode as CANopen PDO node IDs but did not publish heartbeat or SDO traffic. Treat them as process-image endpoints until a physical node is proven."
+  confidence: "inferred"
+  endpoints:
+    - endpoint_id: 26
+      endpoint_id_hex: "0x1A"
+      working_name: "CPU1-IMAGE"
+      paired_controller: "CPU1 node 16"
+      rationale: "ID offset +10 and matching fast-cycle process-image structure"
+      observed_tpdos: ["0x19A (8 bytes)", "0x29A (8 bytes, fast)", "0x39A (8 bytes, fast)", "0x49A (3 bytes, fast)"]
+    - endpoint_id: 27
+      endpoint_id_hex: "0x1B"
+      working_name: "CPU3-IMAGE"
+      paired_controller: "CPU3 node 17"
+      rationale: "ID offset +10 and matching fast-cycle process-image structure"
+      observed_rpdos: ["0x21B (8 bytes, changing)"]
+      observed_tpdos: ["0x19B (8 bytes)", "0x29B (8 bytes, fast)", "0x39B (8 bytes, fast)", "0x49B (3 bytes, fast)"]
+    - endpoint_id: 29
+      endpoint_id_hex: "0x1D"
+      working_name: "CPU2-IMAGE"
+      paired_controller: "CPU2 node 19"
+      rationale: "ID offset +10 and matching fast-cycle process-image structure"
+      observed_tpdos: ["0x19D (8 bytes)", "0x29D (8 bytes, fast)", "0x39D (8 bytes, fast)", "0x49D (3 bytes, fast)"]
+
+node_candidates:
+  - node_id: 32
+    node_id_hex: "0x20"
+    working_name: "D555 candidate"
+    presence: "NMT reset requests observed; no response, heartbeat, SDO, EMCY, or PDO"
+    evidence: "The controller transmitted 81 20 approximately every 0.5 s in the horn log. D555 is the only schematic CAN0 module not present in the user node table."
+    confidence: "inferred"
+    warning: "Do not label node 32 as D555 in production logic until a D555 heartbeat or physical isolation test confirms it."
+
+identified_routes:
+  cabin_horn_request:
+    physical_source: "D552 X3 pin 10, S186-A3 SWITCH WARNING SIGNAL CABIN"
+    source_frame:
+      cob_id: "0x186"
+      service: "D552 TPDO1"
+      byte: 1
+      bit: 1
+      absolute_bit: 9
+      mask_u16_le: "0x0200"
+      released_payload_observed: "02 00"
+      pressed_payload_observed: "02 02"
+      confidence: "confirmed"
+    correlated_copies:
+      - {cob_id: "0x511", owner: "CPU3", service: "RPDO4", byte: 0, bit: 6, mask: "0x40", confidence: "high"}
+      - {cob_id: "0x49A", owner: "CPU1-IMAGE", service: "TPDO4", byte: 1, bit: 4, mask: "0x10", confidence: "high"}
+      - {cob_id: "0x49B", owner: "CPU3-IMAGE", service: "TPDO4", byte: 2, bit: 2, mask: "0x04", confidence: "high"}
+    physical_destination_candidate:
+      device: "H186"
+      name: "FRONT HORN WARNING"
+      evidence: "schematic sheets 32(47) and 37(47)"
+      switching_output: "CPU3 pin 17"
+      drive_path: "CPU3 pin 17 -> 24V/H186 cross-reference on sheet 37(47) -> H186 on sheet 32(47)"
+      shared_output_note: "CPU3 pin 17 is also connected into the H185 reverse/warning signal circuit."
+      confidence: "confirmed physical wiring; high causal correlation to the S186 cabin switch"
+    unresolved_destination: "The physical CPU3 pin 17 path to H186 is identified, but its final CAN output-command bit remains unknown."
+
+electrical_interfaces:
+  ignition_and_start:
+    source: "schematic sheet 06(47)"
+    key_switch: "S139"
+    signals:
+      - {name: "IGNITION ON", contact: "S139/15", related_node_channel: "D550 X3 pin 4 / TPDO1 bit 3", confidence: "confirmed"}
+      - {name: "START MOTOR", contact: "S139/50", related_node_channel: "D550 X3 pin 3 / TPDO1 bit 2", confidence: "confirmed"}
+      - {name: "+24 V FOR DISPLAY D501", destination: "D501", confidence: "confirmed"}
+    emergency_stop:
+      architecture: "Two-channel hardwired circuit"
+      cabin_contacts: ["S132A-1", "S132A-2"]
+      feed_contacts: ["S132B-1", "S132B-2"]
+      safety_relay: "K132"
+      downstream_relays: ["K11", "K301"]
+      note: "No direct CAN/PDO mapping is proven for the emergency-stop contacts."
+
+  engine_j1939:
+    source: "schematic sheets 07(47) and 08(47)"
+    machine_controller: "CPU2 node 19"
+    cpu2_pins: {can_high: 26, can_low: 25}
+    cabinet_connector: "J63 F=J1939 CAN-, J63 G=J1939 CAN+"
+    inline_connector: "X102 pin 5=CAN-, pin 4=CAN+"
+    termination: "R2J1939 120 ohm across X104 pins 5 and 4"
+    tier3_ecm:
+      applicability: "ONLY T3"
+      connector: "ECM P1/J1"
+      power:
+        - {ecm_pin: 70, signal: "+Battery Switched", machine_connector: "X101 pin 13"}
+        - {ecm_pin: 48, signal: "+Battery Unswitched", machine_connector: "X101 pin 1"}
+        - {ecm_pin: 52, signal: "+Battery Unswitched", machine_connector: "X101 pin 2"}
+        - {ecm_pin: 53, signal: "+Battery Unswitched", machine_connector: "X101 pin 3"}
+        - {ecm_pin: 55, signal: "+Battery Unswitched", machine_connector: "X101 pin 4"}
+      data:
+        - {ecm_pin: 42, signal: "J1939 shield", machine_connector: "X101 pin 31"}
+        - {ecm_pin: 8, signal: "CAT Data Link +", machine_connector: "X101 pin 24"}
+        - {ecm_pin: 9, signal: "CAT Data Link -", machine_connector: "X101 pin 25"}
+        - {ecm_pin: 34, signal: "J1939 DATA -", machine_connector: "X101 pin 27"}
+        - {ecm_pin: 50, signal: "J1939 DATA +", machine_connector: "X101 pin 26"}
+      auxiliary:
+        - {ecm_pin: 12, signal: "Ether start aid solenoid Y817", machine_connector: "X101 pin 10"}
+        - {ecm_pin: 2, signal: "Analog sensor 5 V supply", destination: "B361 coolant level sensor +"}
+        - {ecm_pin: 3, signal: "Analog sensor return", destination: "B361 coolant level sensor -"}
+        - {ecm_pin: 49, signal: "Coolant level sensor input", destination: "B361 signal"}
+    interpretation:
+      - "CPU2 is physically connected to the engine J1939 pair while also operating as CANopen node 19, making it the strongest gateway candidate."
+      - "CAT Data Link is wired to the engine ECM connector but is not shown connected to CPU2 on these sheets."
+
+  can1_service_connector:
+    source: "schematic sheet 07(47)"
+    connector: "KCC33"
+    pins:
+      - {pin: 1, signal: "X1/50 supply/reference", destination: "sheet 23-8/A"}
+      - {pin: 2, signal: "X1/100 supply/reference", destination: "sheet 23-8/A"}
+      - {pin: 3, signal: "CAN1_H", path: "X1/36", destination: "sheet 23-8/B"}
+      - {pin: 4, signal: "CAN1_L", path: "X1/37", destination: "sheet 23-8/B"}
+    confidence: "confirmed"
+    note: "The owner/controller of CAN1 is not identified on the supplied sheets."
+
+open_questions:
+  - "Confirm whether node 32 is physically D555."
+  - "Decode the remaining TPDO2 payloads of D550, D551, and D554; D553 0x285 is decoded and D552 0x286 byte 6 is identified as S272."
+  - "Identify the output-command mapping in RPDO1 for D550-D554."
+  - "Confirm the high-confidence CPU2 and CPU3 analog TPDO assignments with a synchronized HMI/CAN capture and one isolated sensor change at a time."
+  - "Determine engineering pressure scaling for B456 and B460 and verify the candidate B352 RM-to-percent formula."
+  - "Identify the CPU1 B409B pitch/roll TPDO words and electrical scaling."
+  - "Resolve the B172 depth-sensor discrepancy: field HMI reports CPU3 contact 37, while the schematic shows encoder channels at pins 2 and 20."
+  - "Confirm H186 by isolated actuation and identify its final CAN output-command bit and switching path."
+  - "Resolve the CPU3 pin 16 conflict: B178 input on sheet 29(47) versus Y253 output on sheet 36(47)."
+  - "Verify whether CPU1 pin 5 is intentionally used as a VBB supply fan-out to Y176/Y552B or whether the pin designation is variant-dependent."
+  - "Verify the duplicated S449-A3 designation on D554 X3 pins 9 and 10."
+  - "Confirm whether the CPU1 pin 30 line is named ignition sense, engine-interface supply sense, or another Epec input."

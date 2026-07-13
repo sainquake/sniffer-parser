@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -166,6 +167,18 @@ DASHBOARD_HTML = r"""<!doctype html>
     .chart-card { min-height: 210px; padding: 11px; }
     .chart-title { font-weight: 650; }
     .chart-value { margin-top: 3px; color: var(--cyan); font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+    .chart-meta { margin-top: 4px; color: var(--muted); font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px; }
+    .chart-series {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 11px;
+    }
+    .series-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+    .series-swatch { width: 9px; height: 9px; border-radius: 2px; }
     .chart-card canvas { display: block; width: 100%; height: 150px; margin-top: 8px; }
 
     .empty-state {
@@ -425,6 +438,14 @@ DASHBOARD_HTML = r"""<!doctype html>
       setConnection(data.phase || 'running', data.phase !== 'error');
     }
 
+    const CHART_WINDOW_SECONDS = 30;
+    const SERIES_COLORS = ['#4e9ee9', '#36c5bd', '#e7b84b', '#ef6461', '#b996ff', '#8bd17c'];
+
+    function formatAxisTime(seconds) {
+      if (!Number.isFinite(seconds)) return '+0s';
+      return `+${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+    }
+
     function drawChart(canvas, samples, color) {
       const rect = canvas.getBoundingClientRect();
       const ratio = Math.max(1, window.devicePixelRatio || 1);
@@ -432,44 +453,70 @@ DASHBOARD_HTML = r"""<!doctype html>
       canvas.height = Math.max(1, Math.round(rect.height * ratio));
       const ctx = canvas.getContext('2d');
       ctx.scale(ratio, ratio);
-      const w = rect.width, h = rect.height, pad = 18;
+      const w = rect.width, h = rect.height, leftPad = 34, rightPad = 8, topPad = 15, bottomPad = 24;
+      const plotW = Math.max(1, w - leftPad - rightPad);
+      const plotH = Math.max(1, h - topPad - bottomPad);
       ctx.strokeStyle = '#262c2d'; ctx.lineWidth = 1;
       for (let i = 0; i < 4; i++) {
-        const y = pad + (h - pad * 2) * i / 3;
-        ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad, y); ctx.stroke();
+        const y = topPad + plotH * i / 3;
+        ctx.beginPath(); ctx.moveTo(leftPad, y); ctx.lineTo(w - rightPad, y); ctx.stroke();
       }
-      if (!samples || samples.length < 2) return;
-      const values = samples.map(sample => Number(sample.value)).filter(Number.isFinite);
-      if (values.length < 2) return;
+      const end = samples && samples.length ? Number(samples[samples.length - 1].time) : 0;
+      const start = Math.max(0, end - CHART_WINDOW_SECONDS);
+      ctx.fillStyle = '#8f9896'; ctx.font = '10px Consolas, monospace';
+      for (let i = 0; i <= 3; i++) {
+        const tickTime = start + CHART_WINDOW_SECONDS * i / 3;
+        const x = leftPad + plotW * i / 3;
+        ctx.strokeStyle = '#303637';
+        ctx.beginPath(); ctx.moveTo(x, topPad); ctx.lineTo(x, topPad + plotH); ctx.stroke();
+        const label = formatAxisTime(tickTime);
+        const labelWidth = ctx.measureText(label).width;
+        const labelX = Math.min(Math.max(0, x - labelWidth / 2), w - labelWidth);
+        ctx.fillText(label, labelX, h - 6);
+      }
+      if (!samples || samples.length < 1) return;
+      const windowSamples = samples
+        .map(sample => ({time: Number(sample.time), value: Number(sample.value)}))
+        .filter(sample => Number.isFinite(sample.time) && Number.isFinite(sample.value) && sample.time >= start && sample.time <= end);
+      const values = windowSamples.map(sample => sample.value);
+      if (values.length < 1) return;
       let min = Math.min(...values), max = Math.max(...values);
       if (min === max) { min -= 1; max += 1; }
-      const start = Number(samples[0].time), end = Number(samples[samples.length - 1].time);
-      const span = Math.max(0.001, end - start);
       ctx.strokeStyle = color || '#4e9ee9'; ctx.lineWidth = 1.7; ctx.lineJoin = 'round';
       ctx.beginPath();
-      samples.forEach((sample, index) => {
-        const x = pad + (w - pad * 2) * (Number(sample.time) - start) / span;
-        const y = h - pad - (h - pad * 2) * (Number(sample.value) - min) / (max - min);
+      windowSamples.forEach((sample, index) => {
+        const x = leftPad + plotW * (sample.time - start) / CHART_WINDOW_SECONDS;
+        const y = topPad + plotH - plotH * (sample.value - min) / (max - min);
         if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       });
       ctx.stroke();
-      ctx.fillStyle = '#8f9896'; ctx.font = '10px Consolas, monospace';
-      ctx.fillText(max.toFixed(1), 2, pad + 3); ctx.fillText(min.toFixed(1), 2, h - pad + 3);
+      if (windowSamples.length === 1) {
+        const sample = windowSamples[0];
+        const x = leftPad + plotW * (sample.time - start) / CHART_WINDOW_SECONDS;
+        const y = topPad + plotH - plotH * (sample.value - min) / (max - min);
+        ctx.fillStyle = color || '#4e9ee9';
+        ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#8f9896';
+      ctx.fillText(max.toFixed(1), 2, topPad + 3); ctx.fillText(min.toFixed(1), 2, topPad + plotH + 3);
     }
 
     function renderAnalog(channels) {
       ui.analogGrid.replaceChildren();
       if (!channels || channels.length === 0) {
         ui.analogNote.textContent = '0 identified channels';
-        ui.analogGrid.append(text('div', 'No confirmed analog channel mapping is available yet.', 'empty-state'));
+        ui.analogGrid.append(text('div', 'No analog channel mapping is available yet.', 'empty-state'));
         return;
       }
       ui.analogNote.textContent = `${channels.length} identified channel${channels.length === 1 ? '' : 's'}`;
       channels.forEach((channel, index) => {
         const card = document.createElement('article'); card.className = 'chart-card';
         card.append(text('div', channel.name, 'chart-title'));
-        const current = channel.value == null ? 'unknown' : `${channel.value} ${channel.unit || ''}`.trim();
+        const numeric = Number(channel.value);
+        const current = channel.value == null || !Number.isFinite(numeric) ? 'unknown' : `${numeric.toFixed(Math.abs(numeric) >= 100 ? 1 : 2)} ${channel.unit || ''}`.trim();
         card.append(text('div', current, 'chart-value'));
+        const raw = channel.raw_value == null ? 'raw unknown' : `raw ${channel.raw_value} ${channel.raw_unit || ''}`.trim();
+        card.append(text('div', `${channel.node_name || ''} ${channel.service || ''} ${channel.cob_id || ''} B${channel.byte} · ${raw}`, 'chart-meta'));
         const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', channel.name);
         card.append(canvas); ui.analogGrid.append(card);
         requestAnimationFrame(() => drawChart(canvas, channel.samples, index % 2 ? '#36c5bd' : '#4e9ee9'));
@@ -582,6 +629,17 @@ DASHBOARD_HTML = r"""<!doctype html>
 """
 
 
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """Avoid duplicate dashboard servers sharing one Windows TCP port."""
+
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class DashboardServer:
     """Serve a replaceable JSON snapshot and a self-contained dashboard page."""
 
@@ -593,6 +651,7 @@ class DashboardServer:
         self._payload_lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.actual_port = 0
         self.url = ""
 
     def update(self, snapshot: dict[str, Any]) -> None:
@@ -636,7 +695,7 @@ class DashboardServer:
         ports = (0,) if self.requested_port == 0 else range(self.requested_port, min(65536, self.requested_port + 20))
         for port in ports:
             try:
-                self._server = ThreadingHTTPServer((self.host, port), Handler)
+                self._server = ExclusiveThreadingHTTPServer((self.host, port), Handler)
                 break
             except OSError as error:
                 last_error = error
@@ -645,6 +704,7 @@ class DashboardServer:
 
         self._server.daemon_threads = True
         actual_port = self._server.server_address[1]
+        self.actual_port = int(actual_port)
         browser_host = "127.0.0.1" if self.host in ("0.0.0.0", "::") else self.host
         self.url = f"http://{browser_host}:{actual_port}/"
         self._thread = threading.Thread(target=self._server.serve_forever, name="d65-dashboard", daemon=True)

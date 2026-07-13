@@ -67,11 +67,16 @@ class AnalogDefinition:
     key: str
     name: str
     cob_id: int
+    node_id: int
+    node_name: str
+    service: str
+    pdo_number: int
     byte: int
     length: int
     scale: float
     offset: float
     unit: str
+    raw_unit: str
     signed: bool = False
     byte_order: str = "little"
     source: str = "protocol analysis"
@@ -101,6 +106,8 @@ class AnalogState:
     value: float | None = None
     raw_value: int | None = None
     updates: int = 0
+    first_seen: float = 0.0
+    last_seen: float = 0.0
     samples: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
 
 
@@ -223,9 +230,314 @@ SIGNALS_BY_COB_ID: dict[int, list[SignalDefinition]] = {}
 for _definition in SIGNAL_CATALOG.values():
     SIGNALS_BY_COB_ID.setdefault(_definition.cob_id, []).append(_definition)
 
-# Keep this catalog empty until a channel's byte layout, scale, and unit are
-# identified. Raw PDO words are not automatically treated as analog values.
-ANALOG_CATALOG: tuple[AnalogDefinition, ...] = ()
+ANALOG_CATALOG: tuple[AnalogDefinition, ...] = (
+    AnalogDefinition(
+        key="CPU1.TPDO1.Y206A_CURRENT",
+        name="Y206A TRAMMING LEFT FORWARD actual current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x190,
+        service="TPDO",
+        pdo_number=1,
+        byte=0,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="d65_nodes.yaml cpu1_tpdo1_tramming_pwm_feedback",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.TPDO1.Y206B_CURRENT",
+        name="Y206B TRAMMING LEFT BACKWARD actual current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x190,
+        service="TPDO",
+        pdo_number=1,
+        byte=2,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="d65_nodes.yaml cpu1_tpdo1_tramming_pwm_feedback",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.TPDO1.Y207A_CURRENT",
+        name="Y207A TRAMMING RIGHT FORWARD actual current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x190,
+        service="TPDO",
+        pdo_number=1,
+        byte=4,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="d65_nodes.yaml cpu1_tpdo1_tramming_pwm_feedback",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.TPDO1.Y207B_CURRENT",
+        name="Y207B TRAMMING RIGHT BACKWARD actual current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x190,
+        service="TPDO",
+        pdo_number=1,
+        byte=6,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="d65_nodes.yaml cpu1_tpdo1_tramming_pwm_feedback",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="D553.TPDO2.S174A_FORWARD",
+        name="S174A TRAMMING LEFT FORWARD",
+        node_id=5,
+        node_name="D553",
+        cob_id=0x285,
+        service="TPDO",
+        pdo_number=2,
+        byte=0,
+        length=2,
+        scale=1.0 / 1.2,
+        offset=-(2.0 / 1.2),
+        unit="%",
+        raw_unit="RM",
+        source="d65_nodes.yaml d553_tpdo2_tramming_joysticks",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="D553.TPDO2.S174B_BACKWARD",
+        name="S174B TRAMMING LEFT BACKWARD",
+        node_id=5,
+        node_name="D553",
+        cob_id=0x285,
+        service="TPDO",
+        pdo_number=2,
+        byte=2,
+        length=2,
+        scale=1.0 / 1.2,
+        offset=-(2.0 / 1.2),
+        unit="%",
+        raw_unit="RM",
+        source="d65_nodes.yaml d553_tpdo2_tramming_joysticks",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="D553.TPDO2.S175A_FORWARD",
+        name="S175A TRAMMING RIGHT FORWARD",
+        node_id=5,
+        node_name="D553",
+        cob_id=0x285,
+        service="TPDO",
+        pdo_number=2,
+        byte=4,
+        length=2,
+        scale=1.0 / 1.2,
+        offset=-(2.0 / 1.2),
+        unit="%",
+        raw_unit="RM",
+        source="d65_nodes.yaml d553_tpdo2_tramming_joysticks",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="D553.TPDO2.S175B_BACKWARD",
+        name="S175B TRAMMING RIGHT BACKWARD",
+        node_id=5,
+        node_name="D553",
+        cob_id=0x285,
+        service="TPDO",
+        pdo_number=2,
+        byte=6,
+        length=2,
+        scale=1.0 / 1.2,
+        offset=-(2.0 / 1.2),
+        unit="%",
+        raw_unit="RM",
+        source="d65_nodes.yaml d553_tpdo2_tramming_joysticks",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="D552.TPDO2.S272_WATER_MIST_FLOW_RAW",
+        name="S272 WATER MIST FLOW raw",
+        node_id=6,
+        node_name="D552",
+        cob_id=0x286,
+        service="TPDO",
+        pdo_number=2,
+        byte=6,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="RM",
+        raw_unit="RM",
+        source="d65_nodes.yaml d552_tpdo2_watermist_flow",
+        confidence="high; engineering scale unknown",
+    ),
+    AnalogDefinition(
+        key="CPU3.TPDO1.Y504_CURRENT",
+        name="Y504 COOLING FAN HYDRAULIC OIL AND COMPRESSOR OIL actual current",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x191,
+        service="TPDO",
+        pdo_number=1,
+        byte=0,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="d65_nodes.yaml pwm_feedback_candidates",
+        confidence="inferred",
+    ),
+    AnalogDefinition(
+        key="CPU3.TPDO2.Y501_CURRENT",
+        name="Y501 COOLING FAN DIESEL MOTOR actual current",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x291,
+        service="TPDO",
+        pdo_number=2,
+        byte=6,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="d65_nodes.yaml pwm_feedback_candidates",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU3.TPDO3.B147_AMBIENT_TEMP",
+        name="B147 AMBIENT TEMP",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x391,
+        service="TPDO",
+        pdo_number=3,
+        byte=6,
+        length=2,
+        scale=1.0 / 80.0,
+        offset=-100.0,
+        unit="degC",
+        raw_unit="uA",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU3.TPDO4.B362_HYDRAULIC_OIL_TEMP",
+        name="B362 HYDRAULIC OIL TEMP",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x491,
+        service="TPDO",
+        pdo_number=4,
+        byte=0,
+        length=2,
+        scale=1.0 / 80.0,
+        offset=-100.0,
+        unit="degC",
+        raw_unit="uA",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU3.TPDO4.B366A_COMPRESSOR_TEMP_HIGH",
+        name="B366A COMPRESSOR TEMP HIGH STAGE",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x491,
+        service="TPDO",
+        pdo_number=4,
+        byte=2,
+        length=2,
+        scale=1.0 / 80.0,
+        offset=-100.0,
+        unit="degC",
+        raw_unit="uA",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU3.TPDO4.B366B_COMPRESSOR_TEMP_LOW",
+        name="B366B COMPRESSOR TEMP LOW STAGE",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x491,
+        service="TPDO",
+        pdo_number=4,
+        byte=4,
+        length=2,
+        scale=1.0 / 80.0,
+        offset=-100.0,
+        unit="degC",
+        raw_unit="uA",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU2.TPDO3.B460_COMPRESSOR_OIL_STOP_VALVE_PRESSURE_RAW",
+        name="B460 COMPRESSOR OIL STOP VALVE PRESSURE raw",
+        node_id=19,
+        node_name="CPU2",
+        cob_id=0x393,
+        service="TPDO",
+        pdo_number=3,
+        byte=4,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="uA",
+        raw_unit="uA",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high for raw channel identity; engineering pressure scale unknown",
+    ),
+    AnalogDefinition(
+        key="CPU2.TPDO3.B456_VESSEL_PRESSURE_RAW",
+        name="B456 VESSEL PRESSURE raw",
+        node_id=19,
+        node_name="CPU2",
+        cob_id=0x393,
+        service="TPDO",
+        pdo_number=3,
+        byte=6,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mV",
+        raw_unit="mV",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high for raw channel identity; engineering pressure scale unknown",
+    ),
+    AnalogDefinition(
+        key="CPU2.TPDO4.B352_DIESEL_LEVEL",
+        name="B352 DIESEL LEVEL",
+        node_id=19,
+        node_name="CPU2",
+        cob_id=0x493,
+        service="TPDO",
+        pdo_number=4,
+        byte=2,
+        length=2,
+        scale=1.0 / 1.5,
+        offset=0.0,
+        unit="%",
+        raw_unit="RM",
+        source="d65_nodes.yaml analog_pdo_candidates",
+        confidence="high raw identity; percent scale inferred from one HMI point",
+    ),
+)
 ANALOG_BY_COB_ID: dict[int, list[AnalogDefinition]] = {}
 for _definition in ANALOG_CATALOG:
     ANALOG_BY_COB_ID.setdefault(_definition.cob_id, []).append(_definition)
@@ -362,9 +674,22 @@ def signal_value(data: bytes, definition: SignalDefinition) -> bool | None:
     return bool(data[byte_index] & (1 << definition.bit))
 
 
-def update_analog_channels(state: MonitorState, cob_id: int, data: bytes, timestamp: float) -> None:
+def analog_record(analog: AnalogState) -> dict[str, Any]:
+    definition = analog.definition
+    return {
+        **asdict(definition),
+        "value": analog.value,
+        "raw_value": analog.raw_value,
+        "updates": analog.updates,
+        "first_seen": analog.first_seen or None,
+        "last_seen": analog.last_seen or None,
+    }
+
+
+def update_analog_channels(state: MonitorState, cob_id: int, data: bytes, timestamp: float) -> list[dict[str, Any]]:
+    decoded: list[dict[str, Any]] = []
     for definition in ANALOG_BY_COB_ID.get(cob_id, []):
-        start = definition.byte - 1
+        start = definition.byte
         end = start + definition.length
         if start < 0 or end > len(data):
             continue
@@ -378,10 +703,27 @@ def update_analog_channels(state: MonitorState, cob_id: int, data: bytes, timest
         if analog is None:
             analog = AnalogState(definition=definition)
             state.analog[definition.key] = analog
+        if not analog.updates:
+            analog.first_seen = timestamp
         analog.raw_value = raw_value
         analog.value = value
         analog.updates += 1
+        analog.last_seen = timestamp
         analog.samples.append((timestamp, value))
+        decoded.append(
+            {
+                "key": definition.key,
+                "name": definition.name,
+                "value": value,
+                "raw_value": raw_value,
+                "unit": definition.unit,
+                "raw_unit": definition.raw_unit,
+                "byte": definition.byte,
+                "length": definition.length,
+                "confidence": definition.confidence,
+            }
+        )
+    return decoded
 
 
 def signal_record(signal: SignalState) -> dict[str, Any]:
@@ -518,7 +860,9 @@ def decode_d65_frame(
     decoded_signals: list[dict[str, Any]] = []
     changes: list[dict[str, Any]] = []
     if isinstance(arbitration_id, int):
-        update_analog_channels(state, arbitration_id, payload, timestamp)
+        decoded_analog = update_analog_channels(state, arbitration_id, payload, timestamp)
+        if decoded_analog:
+            event["analog"] = decoded_analog
         for definition in SIGNALS_BY_COB_ID.get(arbitration_id, []):
             value = signal_value(payload, definition)
             signal, change = update_signal(state, definition, value, timestamp, record)
@@ -560,6 +904,10 @@ class ParsedOutputs:
             output_dir / "signal_catalog.json",
             [asdict(definition) for definition in sorted(SIGNAL_CATALOG.values(), key=lambda item: item.key)],
         )
+        self._write_json(
+            output_dir / "analog_catalog.json",
+            [asdict(definition) for definition in sorted(ANALOG_CATALOG, key=lambda item: item.key)],
+        )
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
@@ -591,6 +939,11 @@ class ParsedOutputs:
             for key, definition in sorted(SIGNAL_CATALOG.items())
         ]
         self._write_json(self.output_dir / "final_state.json", final_signals)
+        final_analog = [
+            analog_record(state.analog.get(definition.key, AnalogState(definition=definition)))
+            for definition in sorted(ANALOG_CATALOG, key=lambda item: item.key)
+        ]
+        self._write_json(self.output_dir / "analog_final_state.json", final_analog)
 
         nodes = {}
         for node_id, node in sorted(state.nodes.items()):
@@ -618,6 +971,7 @@ class ParsedOutputs:
         self._write_json(self.output_dir / "nodes.json", nodes)
 
         observed = sum(1 for signal in final_signals if signal["value"] is not None)
+        analog_observed = sum(1 for signal in final_analog if signal["value"] is not None)
         duration = max(0.0, state.last_source_epoch - state.first_source_epoch) if state.first_source_epoch else 0.0
         summary = {
             "status": status,
@@ -632,12 +986,16 @@ class ParsedOutputs:
             "nodes_total": len(state.nodes),
             "signals_total": len(SIGNAL_CATALOG),
             "signals_observed": observed,
+            "analog_signals_total": len(ANALOG_CATALOG),
+            "analog_signals_observed": analog_observed,
             "signal_changes": state.signal_change_count,
             "output_files": {
                 "decoded": self.decoded_path.name,
                 "signal_changes": self.changes_path.name,
                 "signal_catalog": "signal_catalog.json",
+                "analog_catalog": "analog_catalog.json",
                 "final_state": "final_state.json",
+                "analog_final_state": "analog_final_state.json",
                 "nodes": "nodes.json",
                 "comments": self.comments_path.name,
             },
@@ -775,6 +1133,39 @@ def render_node_table(state: MonitorState) -> list[str]:
     return lines
 
 
+def format_number(value: float | None) -> str:
+    if value is None:
+        return "UNKNOWN"
+    if abs(value) >= 1000:
+        return f"{value:.0f}"
+    if abs(value) >= 100:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def render_analog_table(state: MonitorState, width: int) -> list[str]:
+    rows: list[str] = []
+    for definition in sorted(ANALOG_CATALOG, key=lambda item: (item.node_id, item.cob_id, item.byte, item.key)):
+        analog = state.analog.get(definition.key)
+        value = None if analog is None else analog.value
+        raw_value = None if analog is None else analog.raw_value
+        rows.append(
+            "  ".join(
+                (
+                    f"{definition.node_name:<5}",
+                    f"0x{definition.cob_id:03X}",
+                    f"B{definition.byte:<1}",
+                    f"{format_number(value):>8} {definition.unit:<4}",
+                    f"raw={('-' if raw_value is None else raw_value):>5} {definition.raw_unit:<3}",
+                    short(definition.name, max(18, width - 46)),
+                )
+            )
+        )
+    if not rows:
+        return ["ANALOG/PWM SIGNALS | no mapped channels"]
+    return ["ANALOG/PWM SIGNALS | decoded word channels from d65_nodes.yaml"] + rows
+
+
 def render_dashboard(
     state: MonitorState,
     source_log: Path,
@@ -801,6 +1192,9 @@ def render_dashboard(
         lines.extend(render_io_columns(state, width))
     else:
         lines.extend(render_focus_node(state, focus_node))
+
+    lines.append("")
+    lines.extend(render_analog_table(state, width))
 
     lines.append("")
     lines.extend(render_node_table(state))
@@ -938,9 +1332,15 @@ def browser_dashboard_snapshot(
             {
                 "key": definition.key,
                 "name": definition.name,
+                "node_id": definition.node_id,
+                "node_name": definition.node_name,
+                "cob_id": f"0x{definition.cob_id:03X}",
+                "service": f"{definition.service}{definition.pdo_number}",
+                "byte": definition.byte,
                 "value": None if analog is None else analog.value,
                 "raw_value": None if analog is None else analog.raw_value,
                 "unit": definition.unit,
+                "raw_unit": definition.raw_unit,
                 "confidence": definition.confidence,
                 "samples": (
                     []
@@ -990,7 +1390,10 @@ def start_browser_dashboard(
     )
     dashboard.update(browser_dashboard_snapshot(state, source_log, output_dir, "starting"))
     url = dashboard.start()
-    print(f"Dashboard: {url}", file=sys.stderr)
+    if dashboard.actual_port != args.dashboard_port and args.dashboard_port != 0:
+        print(f"Dashboard: {url} (requested port {args.dashboard_port} was busy)", file=sys.stderr)
+    else:
+        print(f"Dashboard: {url}", file=sys.stderr)
     return dashboard
 
 
