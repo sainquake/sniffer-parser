@@ -354,7 +354,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 
       <section class="section">
         <div class="section-head">
-          <h2>Digital inputs</h2>
+          <h2>Digital signals</h2>
           <div class="signal-tools">
             <input id="signalSearch" type="search" placeholder="Filter signals" aria-label="Filter signals">
             <select id="nodeFilter" aria-label="Filter by node"><option value="">All nodes</option></select>
@@ -446,7 +446,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       return `+${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
     }
 
-    function drawChart(canvas, samples, color) {
+    function drawChart(canvas, series) {
       const rect = canvas.getBoundingClientRect();
       const ratio = Math.max(1, window.devicePixelRatio || 1);
       canvas.width = Math.max(1, Math.round(rect.width * ratio));
@@ -461,7 +461,10 @@ DASHBOARD_HTML = r"""<!doctype html>
         const y = topPad + plotH * i / 3;
         ctx.beginPath(); ctx.moveTo(leftPad, y); ctx.lineTo(w - rightPad, y); ctx.stroke();
       }
-      const end = samples && samples.length ? Number(samples[samples.length - 1].time) : 0;
+      const end = Math.max(
+        0,
+        ...series.flatMap(item => (item.samples || []).map(sample => Number(sample.time)).filter(Number.isFinite))
+      );
       const start = Math.max(0, end - CHART_WINDOW_SECONDS);
       ctx.fillStyle = '#8f9896'; ctx.font = '10px Consolas, monospace';
       for (let i = 0; i <= 3; i++) {
@@ -474,31 +477,89 @@ DASHBOARD_HTML = r"""<!doctype html>
         const labelX = Math.min(Math.max(0, x - labelWidth / 2), w - labelWidth);
         ctx.fillText(label, labelX, h - 6);
       }
-      if (!samples || samples.length < 1) return;
-      const windowSamples = samples
-        .map(sample => ({time: Number(sample.time), value: Number(sample.value)}))
-        .filter(sample => Number.isFinite(sample.time) && Number.isFinite(sample.value) && sample.time >= start && sample.time <= end);
-      const values = windowSamples.map(sample => sample.value);
+      const windowSeries = series.map(item => ({
+        ...item,
+        samples: (item.samples || [])
+          .map(sample => ({time: Number(sample.time), value: Number(sample.value)}))
+          .filter(sample => Number.isFinite(sample.time) && Number.isFinite(sample.value) && sample.time >= start && sample.time <= end)
+      }));
+      const values = windowSeries.flatMap(item => item.samples.map(sample => sample.value));
       if (values.length < 1) return;
       let min = Math.min(...values), max = Math.max(...values);
       if (min === max) { min -= 1; max += 1; }
-      ctx.strokeStyle = color || '#4e9ee9'; ctx.lineWidth = 1.7; ctx.lineJoin = 'round';
-      ctx.beginPath();
-      windowSamples.forEach((sample, index) => {
-        const x = leftPad + plotW * (sample.time - start) / CHART_WINDOW_SECONDS;
-        const y = topPad + plotH - plotH * (sample.value - min) / (max - min);
-        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      windowSeries.forEach((item, seriesIndex) => {
+        if (item.samples.length < 1) return;
+        const color = item.color || SERIES_COLORS[seriesIndex % SERIES_COLORS.length];
+        ctx.strokeStyle = color; ctx.lineWidth = 1.7; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        item.samples.forEach((sample, index) => {
+          const x = leftPad + plotW * (sample.time - start) / CHART_WINDOW_SECONDS;
+          const y = topPad + plotH - plotH * (sample.value - min) / (max - min);
+          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        if (item.samples.length === 1) {
+          const sample = item.samples[0];
+          const x = leftPad + plotW * (sample.time - start) / CHART_WINDOW_SECONDS;
+          const y = topPad + plotH - plotH * (sample.value - min) / (max - min);
+          ctx.fillStyle = color;
+          ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+        }
       });
-      ctx.stroke();
-      if (windowSamples.length === 1) {
-        const sample = windowSamples[0];
-        const x = leftPad + plotW * (sample.time - start) / CHART_WINDOW_SECONDS;
-        const y = topPad + plotH - plotH * (sample.value - min) / (max - min);
-        ctx.fillStyle = color || '#4e9ee9';
-        ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
-      }
       ctx.fillStyle = '#8f9896';
       ctx.fillText(max.toFixed(1), 2, topPad + 3); ctx.fillText(min.toFixed(1), 2, topPad + plotH + 3);
+    }
+
+    function shortSeriesName(channel) {
+      const replacements = [
+        [' actual current', ''], ['TRAMMING LEFT ', ''], ['TRAMMING RIGHT ', ''],
+        ['COMPRESSOR TEMP ', ''], ['COOLING FAN ', ''], ['HYDRAULIC OIL AND COMPRESSOR OIL', 'HYD/OIL'],
+        ['DIESEL MOTOR', 'DIESEL']
+      ];
+      let result = channel.name || channel.key || '';
+      replacements.forEach(([from, to]) => { result = result.replace(from, to); });
+      return result.replace(/\s+/g, ' ').trim();
+    }
+
+    function analogGroupKey(channel) {
+      const key = channel.key || '';
+      if (key.includes('Y206')) return 'CPU1.Y206';
+      if (key.includes('Y207')) return 'CPU1.Y207';
+      if (key.includes('S174')) return 'D553.S174';
+      if (key.includes('S175')) return 'D553.S175';
+      if (key.includes('Y501') || key.includes('Y504')) return 'CPU3.COOLING_FAN_CURRENT';
+      if (key.includes('B147') || key.includes('B362') || key.includes('B366')) return 'CPU3.TEMPERATURES';
+      if (key.includes('B301')) return 'CPU2.B301_ENCODER';
+      if (key.includes('B172')) return 'CPU3.B172_DEPTH_ENCODER';
+      return key;
+    }
+
+    function analogGroupTitle(key, channels) {
+      const titles = {
+        'CPU1.Y206': 'Y206 tramming left actual current',
+        'CPU1.Y207': 'Y207 tramming right actual current',
+        'D553.S174': 'S174 left tramming joystick',
+        'D553.S175': 'S175 right tramming joystick',
+        'CPU3.COOLING_FAN_CURRENT': 'Cooling fan actual currents',
+        'CPU3.TEMPERATURES': 'Temperature channels',
+        'CPU2.B301_ENCODER': 'B301 boom swing encoder',
+        'CPU3.B172_DEPTH_ENCODER': 'B172_1 depth encoder raw'
+      };
+      return titles[key] || channels[0]?.name || key;
+    }
+
+    function groupAnalogChannels(channels) {
+      const groups = new Map();
+      channels.forEach(channel => {
+        const key = analogGroupKey(channel);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(channel);
+      });
+      return Array.from(groups.entries()).map(([key, groupChannels]) => ({
+        key,
+        title: analogGroupTitle(key, groupChannels),
+        channels: groupChannels
+      }));
     }
 
     function renderAnalog(channels) {
@@ -520,6 +581,51 @@ DASHBOARD_HTML = r"""<!doctype html>
         const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', channel.name);
         card.append(canvas); ui.analogGrid.append(card);
         requestAnimationFrame(() => drawChart(canvas, channel.samples, index % 2 ? '#36c5bd' : '#4e9ee9'));
+      });
+    }
+
+    function renderAnalog(channels) {
+      ui.analogGrid.replaceChildren();
+      if (!channels || channels.length === 0) {
+        ui.analogNote.textContent = '0 identified channels';
+        ui.analogGrid.append(text('div', 'No analog channel mapping is available yet.', 'empty-state'));
+        return;
+      }
+      const groups = groupAnalogChannels(channels);
+      ui.analogNote.textContent = `${channels.length} channels - ${groups.length} graphs - ${CHART_WINDOW_SECONDS}s window`;
+      groups.forEach((group) => {
+        const card = document.createElement('article'); card.className = 'chart-card';
+        card.append(text('div', group.title, 'chart-title'));
+        const values = group.channels.map(channel => {
+          const numeric = Number(channel.value);
+          const value = channel.value == null || !Number.isFinite(numeric)
+            ? 'unknown'
+            : `${numeric.toFixed(Math.abs(numeric) >= 100 ? 1 : 2)} ${channel.unit || ''}`.trim();
+          return `${shortSeriesName(channel)} ${value}`;
+        });
+        card.append(text('div', values.join('  |  '), 'chart-value'));
+        const meta = group.channels.map(channel => {
+          const raw = channel.raw_value == null ? 'raw unknown' : `raw ${channel.raw_value} ${channel.raw_unit || ''}`.trim();
+          return `${channel.node_name || ''} ${channel.service || ''} ${channel.cob_id || ''} B${channel.byte} - ${raw}`;
+        });
+        card.append(text('div', meta.join('  |  '), 'chart-meta'));
+        const legend = document.createElement('div'); legend.className = 'chart-series';
+        group.channels.forEach((channel, index) => {
+          const item = document.createElement('span'); item.className = 'series-item';
+          const swatch = document.createElement('span'); swatch.className = 'series-swatch';
+          swatch.style.background = SERIES_COLORS[index % SERIES_COLORS.length];
+          item.append(swatch, text('span', shortSeriesName(channel)));
+          legend.append(item);
+        });
+        card.append(legend);
+        const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', group.title);
+        card.append(canvas); ui.analogGrid.append(card);
+        const series = group.channels.map((channel, index) => ({
+          name: shortSeriesName(channel),
+          color: SERIES_COLORS[index % SERIES_COLORS.length],
+          samples: channel.samples || []
+        }));
+        requestAnimationFrame(() => drawChart(canvas, series));
       });
     }
 

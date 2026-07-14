@@ -525,19 +525,29 @@ analog_pdo_candidates:
     likely_mappings:
       - signal: "B460 COMPRESSOR OIL STOP VALVE PRESSURE"
         cob_id: "0x393"
-        word: {byte: 4, length: 2, raw_unit: "uA", observed_raw_range: [19301, 19320]}
+        word: {byte: 4, length: 2, raw_unit: "uA", observed_raw_range_all_D65_can0: [6863, 20967], powered_operating_range: [19147, 20967]}
         hmi_reference: {raw_uA: 7342, pressure_bar: -0.16}
-        rationale: "The CAN range is valid for a 4-20 mA channel and is the only CPU2 word in microamp scale."
+        rationale: "The word has the current-input scale, reaches the independent HMI sample 7342 uA during the 2026-07-14 engine start, and rises into its powered operating range."
       - signal: "B456 VESSEL PRESSURE"
         cob_id: "0x393"
-        word: {byte: 6, length: 2, raw_unit: "mV", observed_raw_range: [906, 911]}
+        word: {byte: 6, length: 2, raw_unit: "mV", observed_raw_range_all_D65_can0: [472, 2125], idle_range: [887, 914]}
         hmi_reference: {raw_mV: 475, pressure_bar: 0.0}
-        rationale: "The CAN range is valid for the voltage pressure channel and is the only CPU2 word in millivolt scale."
+        rationale: "The word starts at 472 mV in the 2026-07-14 engine-start capture, matching the independent 475 mV zero-pressure HMI sample, then rises to 2125 mV during drilling."
       - signal: "B352 DIESEL LEVEL"
         cob_id: "0x493"
-        word: {byte: 2, length: 2, raw_unit: "RM", observed_raw_range: [117, 118]}
+        word: {byte: 2, length: 2, raw_unit: "RM", observed_normal_range_all_D65_can0: [27, 118], shutdown_transient: 767}
         hmi_reference: {raw_RM: 132, level_percent: 88}
-        rationale: "The CAN word is in the same raw RM domain and changes slowly like a fuel-level sender."
+        rationale: "The word is in the same raw RM domain, is stable at 117-118 in the 2026-07-13 captures and 45-46 in most 2026-07-14 captures, and swings to 27-63 mainly during vehicle movement."
+      - signal: "B301 BOOM SWING ENCODER signed count"
+        cob_id: "0x19D"
+        word: {byte: 4, length: 4, byte_order: "little", signed: true, raw_unit: "P", observed_raw_range_all_D65_can0: [-513, 60]}
+        related_discrete_channels:
+          - {signal: "B301A BOOM SWING ENCODER phase A", cob_id: "0x49D", byte: 1, bit: 6, confidence: "high"}
+          - {signal: "B301B BOOM SWING ENCODER phase B", cob_id: "0x49D", byte: 1, bit: 7, confidence: "high"}
+          - {signal: "B301Z BOOM SWING ENCODER index", cob_id: "0x49D", byte: 1, bit: 5, confidence: "high"}
+          - {signal: "B301Z cumulative pulse count since CPU2 restart", cob_id: "0x39D", byte: 2, length: 2, byte_order: "little", confidence: "high"}
+        rationale: "The signed count follows the byte 1 bits 6/7 quadrature sequence. In the long 2026-07-14 sweep, both B1.5 pulses incremented the 0x39D word exactly once (2->3 and 3->4); the word reset to zero after CPU2 restart."
+        confidence: "high for count, A/B/Z identity, and Z counter; count-to-degree scale remains unknown"
     confidence: "high for raw channel identity; engineering pressure scaling remains unknown"
   CPU3:
     physical_analog_sources: ["B362 HYDRAULIC OIL TEMP / pin 10", "B366A COMPRESSOR TEMP HIGH STAGE / pin 29", "B366B COMPRESSOR TEMP LOW STAGE / pin 11", "B147 AMBIENT TEMP / pin 28"]
@@ -546,9 +556,86 @@ analog_pdo_candidates:
       - {signal: "B362 HYDRAULIC OIL TEMP", cob_id: "0x491", byte: 0, raw_unit: "uA", observed_raw_range: [11325, 11349], derived_degC_range: [41.56, 41.86]}
       - {signal: "B366A COMPRESSOR TEMP HIGH STAGE", cob_id: "0x491", byte: 2, raw_unit: "uA", observed_raw_range: [11652, 11664], derived_degC_range: [45.65, 45.8]}
       - {signal: "B366B COMPRESSOR TEMP LOW STAGE", cob_id: "0x491", byte: 4, raw_unit: "uA", observed_raw_range: [11562, 11574], derived_degC_range: [44.53, 44.68]}
+      - {signal: "B172_1 DEPTH ENCODER raw", cob_id: "0x29B", byte: 4, raw_unit: "P", observed_raw_range: [45212, 50513], hmi_reference: {raw: 50760, engineering_m: 2.599}}
     scaling_profile: "temperature_4_20ma_minus50_150c"
     rationale: "One isolated ambient-temperature word plus three adjacent hydraulic/compressor words exactly fill the four HMI-confirmed 4-20 mA temperature channels and produce plausible temperatures."
     confidence: "high"
+
+cpu2_can0_protocol:
+  scope: "All usable logs matching logs/*D65_can0*.jsonl through 2026-07-14; byte and bit offsets in this section are zero-based."
+  capture_quality:
+    usable_log_groups: ["2026-07-13 baseline/rotation/regimes/RPM/oscilation/horn", "2026-07-14 dashboard/movement/oscilation/drilling/carousel/engine stop/start"]
+    excluded_logs:
+      - {file: "2026-07-13_01-07-08_D65_can0_RHS_backward.jsonl", reason: "adapter selected 1 Mbit/s; almost entirely CAN error frames"}
+      - {files: ["2026-07-14_01-36-03_D65_can0_test_dashboard_online.jsonl", "2026-07-14_01-38-00_D65_can0_test.jsonl"], reason: "metadata only; no CAN frames"}
+  controller_node:
+    node_id: 19
+    heartbeat: {cob_id: "0x713", state: "operational"}
+    pdo_map:
+      - {service: "TPDO1", cob_id: "0x193", dlc: 8, interpretation: "constant zero in every usable log"}
+      - {service: "TPDO2", cob_id: "0x293", dlc: 8, interpretation: "constant zero in every usable log"}
+      - {service: "TPDO3", cob_id: "0x393", dlc: 8, layout: ["bytes 0-3 constant zero", "uint16_le B460 at byte 4", "uint16_le B456 at byte 6"]}
+      - {service: "TPDO4", cob_id: "0x493", dlc: 8, layout: ["bytes 0-1 constant zero", "uint16_le B352 at byte 2", "bytes 4-7 constant zero"]}
+      - {service: "RPDO1", cob_id: "0x213", dlc: 8, interpretation: "constant 01 00 00 00 00 00 00 00; likely enable/validity command"}
+      - {service: "RPDO2", cob_id: "0x313", dlc: 8, interpretation: "constant zero"}
+      - {service: "RPDO3", cob_id: "0x413", dlc: 8, interpretation: "constant zero"}
+      - service: "RPDO4"
+        cob_id: "0x513"
+        dlc: 3
+        interpretation: "24-bit CPU2 physical-output command image; 19 of 24 bits are assigned to schematic outputs and all 19 are observed changing"
+        observed_dynamic_bits: ["B0.0", "B0.1", "B0.4", "B0.5", "B0.6", "B0.7", "B1.0", "B1.1", "B1.2", "B1.3", "B1.4", "B1.5", "B1.6", "B1.7", "B2.0", "B2.1", "B2.4", "B2.5", "B2.6"]
+        unmapped_unobserved_bits: ["B0.2", "B0.3", "B2.2", "B2.3", "B2.7"]
+        edge_correlation: "Directly observed 0x513 edges follow the decoded D551/D552/D553/D554 switch edge by approximately 10-30 ms."
+        identified_bits:
+          - {location: "B0.0", signal: "Y419B TRACK OSCILLATION LEFT TILT FORWARD", evidence: "follows S176-A1 and is echoed by 0x49D B1.0", confidence: "high"}
+          - {location: "B0.1", signal: "Y419A TRACK OSCILLATION LEFT TILT BACKWARD", evidence: "follows S176-A3 and is echoed by 0x49D B1.1", confidence: "high"}
+          - {location: "B0.4", signal: "Y350A SUPPORT LOWER OPEN", evidence: "follows S187-A1", confidence: "high"}
+          - {location: "B0.5", signal: "Y350B SUPPORT LOWER CLOSED", confidence: "paired candidate"}
+          - {location: "B0.6", signal: "Y352A WRENCH CW", evidence: "follows S258-A3", confidence: "high"}
+          - {location: "B0.7", signal: "Y352B WRENCH CCW", evidence: "follows S258-A1", confidence: "high"}
+          - {location: "B1.0", signal: "Y354A BRAKE LOWER OPEN", evidence: "paired changes with S259-A3", confidence: "high pair identity; A/B polarity inferred"}
+          - {location: "B1.1", signal: "Y354B BRAKE LOWER CLOSED", evidence: "paired changes with S259-A3", confidence: "high pair identity; A/B polarity inferred"}
+          - {location: "B1.2", signal: "Y356A BRAKE UPPER OPEN", evidence: "paired changes with S260-A3", confidence: "high pair identity; A/B polarity inferred"}
+          - {location: "B1.3", signal: "Y356B BRAKE UPPER CLOSED", evidence: "paired changes with S260-A3", confidence: "high pair identity; A/B polarity inferred"}
+          - {location: "B1.4", signal: "Y357A HOOD UP", evidence: "follows S167-A1 in drilling logs", confidence: "high"}
+          - {location: "B1.5", signal: "Y357B HOOD DOWN", evidence: "follows S167-A3 in drilling logs", confidence: "high"}
+          - {location: "B1.6", signal: "Y361A SUPPORT UPPER OPEN", evidence: "follows S119-A1", confidence: "high"}
+          - {location: "B1.7", signal: "Y361B SUPPORT UPPER CLOSED", evidence: "follows S119-A3", confidence: "high"}
+          - {location: "B2.0", signal: "Y303A CAROUSEL ROTATION CCW", evidence: "follows S111-34 in both carousel logs", confidence: "high"}
+          - {location: "B2.1", signal: "Y303B CAROUSEL ROTATION CW", evidence: "follows S111-54 in both carousel logs", confidence: "high"}
+          - {location: "B2.4", signal: "Y420B TRACK OSCILLATION RIGHT TILT FORWARD", evidence: "follows S177-A1", confidence: "high"}
+          - {location: "B2.5", signal: "Y420A TRACK OSCILLATION RIGHT TILT BACKWARD", evidence: "follows S177-A3", confidence: "high"}
+          - {location: "B2.6", signal: "Y473 TRACK OSCILLATION LOCK command candidate", evidence: "isolated state changes in both oscillation captures", confidence: "high candidate"}
+  process_image_endpoint:
+    endpoint_id: 29
+    pdo_map:
+      - {service: "TPDO1", cob_id: "0x19D", dlc: 8, layout: ["bytes 0-3 constant zero", "int32_le B301 signed encoder count at byte 4"], observed_range: [-513, 60]}
+      - {service: "TPDO2", cob_id: "0x29D", dlc: 8, interpretation: "constant zero"}
+      - {service: "TPDO3", cob_id: "0x39D", dlc: 8, layout: ["bytes 0-1 and 4-7 constant zero", "uint16_le B301Z cumulative rising-edge count at byte 2"], evidence: "increments 2->3 and 3->4 exactly on the two observed B301Z rising edges; resets to zero after CPU2 restart", confidence: "high"}
+      - service: "TPDO4"
+        cob_id: "0x49D"
+        dlc: 3
+        layout:
+          - {location: "B0.0", signal: "B182/B183 CAROUSEL INDEX channel candidate", evidence: "tracks B2.7 during 2026-07-13 carousel movements but remains active throughout the 2026-07-14 isolated carousel log", confidence: "low/inferred"}
+          - {location: "B1.0", signal: "Y419B LEFT FORWARD status", evidence: "follows 0x513 B0.0 by 10-20 ms", confidence: "high correlation; status semantics unresolved"}
+          - {location: "B1.1", signal: "Y419A LEFT BACKWARD status", evidence: "follows 0x513 B0.1 by 10-20 ms", confidence: "high correlation; status semantics unresolved"}
+          - {location: "B1.5", signal: "B301Z encoder index", evidence: "two short pulses, each followed by one 0x39D counter increment", confidence: "high"}
+          - {location: "B1.6", signal: "B301 encoder phase A", confidence: "high"}
+          - {location: "B1.7", signal: "B301 encoder phase B", confidence: "high"}
+          - {location: "B2.0+B2.2", signal: "paired CPU2 state/acknowledgement flags", evidence: "change 10-32 ms after the 0x513 group B0.4/B0.6/B1.0/B1.2/B1.6", confidence: "raw behavior confirmed; physical meaning unresolved"}
+          - {location: "B2.7", signal: "B182/B183 CAROUSEL INDEX channel candidate", evidence: "drops after both Y303 directions and returns at each carousel index", confidence: "high for carousel-index function; B182 versus B183 unresolved"}
+        other_observed_flags: ["B2.1", "B2.3", "B2.6"]
+        warning: "The decoder exposes every remaining 0x49D bit under a generic PROCESS_FLAG name; no schematic device name is assigned without an isolated correlation."
+  unresolved_physical_inputs: ["B381 ECL COLLECTION LOW", "B360 AIR FILTER DIESEL", "B457 WATER MIST TANK LEVEL", "B380 ECL OIL LEVEL", "B365 AIR FILTER COMPRESSOR", "B182/B183 exact channel polarity"]
+  unresolved_physical_outputs:
+    signals: ["Y101B", "Y552A", "Y112D", "Y310", "Y309"]
+    candidate_locations: ["B0.2", "B0.3", "B2.2", "B2.3", "B2.7"]
+    observation: "These five command bits are never asserted in the available D65_can0 logs, so a one-to-one assignment is not possible yet."
+  recommended_isolation_tests:
+    - "Move the boom through a measured angle to derive B301 counts per degree; A/B/Z and the Z counter are already located."
+    - "Rotate the carousel one index in each direction while viewing B182 and B183 separately on the HMI to resolve B0.0/B2.7 polarity."
+    - "Toggle B381, B360, B457, B380, and B365 one at a time to assign the remaining 0x49D process flags."
+    - "Actuate Y101B, Y552A, Y112D, Y310, and Y309 separately to assign B0.2/B0.3/B2.2/B2.3/B2.7."
 
 pwm_feedback_candidates:
   CPU1:
