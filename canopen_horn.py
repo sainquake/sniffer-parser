@@ -16,6 +16,7 @@ DEFAULT_NODE_ID = 6  # D552
 DEFAULT_BITRATE = 500_000
 HORN_PIN = 10
 HORN_MASK = 1 << (HORN_PIN - 1)
+GS_USB_ALIASES = {"canable": "gs_usb", "candlelight": "gs_usb"}
 
 
 def node_id_value(value: str) -> int:
@@ -35,6 +36,11 @@ def positive_float(value: str) -> float:
     return number
 
 
+def normalize_interface(interface: str) -> str:
+    normalized = interface.strip().lower()
+    return GS_USB_ALIASES.get(normalized, normalized)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -48,9 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--node-id",
+        "--source-node-id",
+        dest="node_id",
         type=node_id_value,
         default=DEFAULT_NODE_ID,
-        help="CANopen node ID of the input module (default: 6 / D552)",
+        help="emulated CANopen TPDO1 source node (default: 6 / D552)",
     )
     parser.add_argument(
         "--duration",
@@ -61,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--interface",
         default="gs_usb",
-        help="python-can interface (default: gs_usb for CANable/CandleLight)",
+        help="python-can interface; canable/candlelight are aliases for gs_usb",
     )
     parser.add_argument(
         "--channel",
@@ -95,6 +103,28 @@ def normalize_channel(interface: str, channel: str) -> int | str:
         except ValueError as error:
             raise ValueError("gs_usb channel must be an integer index") from error
     return channel
+
+
+def configure_gs_usb_discovery() -> int:
+    """Make gs-usb use the bundled libusb backend available on Windows."""
+    try:
+        import libusb_package
+        from gs_usb.gs_usb import GsUsb
+    except ImportError as error:
+        raise RuntimeError(
+            "GS-USB dependencies are missing; install requirements.txt"
+        ) from error
+
+    def scan(cls):
+        raw_devices = libusb_package.find(
+            find_all=True,
+            custom_match=cls.is_gs_usb_device,
+        )
+        return [cls(device) for device in raw_devices]
+
+    # python-can imports this same class and calls GsUsb.scan() internally.
+    GsUsb.scan = classmethod(scan)
+    return len(GsUsb.scan())
 
 
 def is_target_tpdo(message, cob_id: int) -> bool:
@@ -180,15 +210,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        channel = normalize_channel(args.interface, args.channel)
+        interface = normalize_interface(args.interface)
+        channel = normalize_channel(interface, args.channel)
+        if interface == "gs_usb":
+            devices_found = configure_gs_usb_discovery()
+            if not isinstance(channel, int) or channel >= devices_found:
+                raise ValueError(
+                    f"Cannot find GS-USB device index {channel}. Devices found: {devices_found}"
+                )
         cob_id = 0x180 + args.node_id
         print(
-            f"Active CAN transmission: interface={args.interface} channel={channel} "
-            f"bitrate={args.bitrate} node={args.node_id} COB-ID=0x{cob_id:03X}",
+            f"Active CAN transmission: interface={interface} channel={channel} "
+            f"bitrate={args.bitrate} source-node={args.node_id} COB-ID=0x{cob_id:03X}",
             file=sys.stderr,
         )
         with can.Bus(
-            interface=args.interface,
+            interface=interface,
             channel=channel,
             bitrate=args.bitrate,
             receive_own_messages=False,
@@ -201,7 +238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         print(f"Horn overlay complete: sent {sent} pressed TPDO1 frame(s)")
         return 0
-    except (ValueError, TimeoutError, can.CanError) as error:
+    except (ValueError, RuntimeError, TimeoutError, can.CanError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 

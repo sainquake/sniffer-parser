@@ -512,7 +512,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 
     function shortSeriesName(channel) {
       const replacements = [
-        [' actual current', ''], ['TRAMMING LEFT ', ''], ['TRAMMING RIGHT ', ''],
+        [' actual current', ' ACT'], [' requested current', ' REQ'], ['TRAMMING LEFT ', ''], ['TRAMMING RIGHT ', ''],
         ['COMPRESSOR TEMP ', ''], ['COOLING FAN ', ''], ['HYDRAULIC OIL AND COMPRESSOR OIL', 'HYD/OIL'],
         ['DIESEL MOTOR', 'DIESEL']
       ];
@@ -527,7 +527,8 @@ DASHBOARD_HTML = r"""<!doctype html>
       if (key.includes('Y207')) return 'CPU1.Y207';
       if (key.includes('S174')) return 'D553.S174';
       if (key.includes('S175')) return 'D553.S175';
-      if (key.includes('Y501') || key.includes('Y504')) return 'CPU3.COOLING_FAN_CURRENT';
+      if (key.includes('Y501')) return 'CPU3.Y501_COOLING_FAN_CURRENT';
+      if (key.includes('Y504')) return 'CPU3.Y504_COOLING_FAN_CURRENT';
       if (key.includes('B147') || key.includes('B362') || key.includes('B366')) return 'CPU3.TEMPERATURES';
       if (key.includes('B301')) return 'CPU2.B301_ENCODER';
       if (key.includes('B172')) return 'CPU3.B172_DEPTH_ENCODER';
@@ -536,11 +537,12 @@ DASHBOARD_HTML = r"""<!doctype html>
 
     function analogGroupTitle(key, channels) {
       const titles = {
-        'CPU1.Y206': 'Y206 tramming left actual current',
-        'CPU1.Y207': 'Y207 tramming right actual current',
+        'CPU1.Y206': 'Y206 tramming left current',
+        'CPU1.Y207': 'Y207 tramming right current',
         'D553.S174': 'S174 left tramming joystick',
         'D553.S175': 'S175 right tramming joystick',
-        'CPU3.COOLING_FAN_CURRENT': 'Cooling fan actual currents',
+        'CPU3.Y501_COOLING_FAN_CURRENT': 'Y501 diesel cooling fan current',
+        'CPU3.Y504_COOLING_FAN_CURRENT': 'Y504 hydraulic/compressor cooling fan current',
         'CPU3.TEMPERATURES': 'Temperature channels',
         'CPU2.B301_ENCODER': 'B301 boom swing encoder',
         'CPU3.B172_DEPTH_ENCODER': 'B172_1 depth encoder raw'
@@ -560,28 +562,6 @@ DASHBOARD_HTML = r"""<!doctype html>
         title: analogGroupTitle(key, groupChannels),
         channels: groupChannels
       }));
-    }
-
-    function renderAnalog(channels) {
-      ui.analogGrid.replaceChildren();
-      if (!channels || channels.length === 0) {
-        ui.analogNote.textContent = '0 identified channels';
-        ui.analogGrid.append(text('div', 'No analog channel mapping is available yet.', 'empty-state'));
-        return;
-      }
-      ui.analogNote.textContent = `${channels.length} identified channel${channels.length === 1 ? '' : 's'}`;
-      channels.forEach((channel, index) => {
-        const card = document.createElement('article'); card.className = 'chart-card';
-        card.append(text('div', channel.name, 'chart-title'));
-        const numeric = Number(channel.value);
-        const current = channel.value == null || !Number.isFinite(numeric) ? 'unknown' : `${numeric.toFixed(Math.abs(numeric) >= 100 ? 1 : 2)} ${channel.unit || ''}`.trim();
-        card.append(text('div', current, 'chart-value'));
-        const raw = channel.raw_value == null ? 'raw unknown' : `raw ${channel.raw_value} ${channel.raw_unit || ''}`.trim();
-        card.append(text('div', `${channel.node_name || ''} ${channel.service || ''} ${channel.cob_id || ''} B${channel.byte} · ${raw}`, 'chart-meta'));
-        const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', channel.name);
-        card.append(canvas); ui.analogGrid.append(card);
-        requestAnimationFrame(() => drawChart(canvas, channel.samples, index % 2 ? '#36c5bd' : '#4e9ee9'));
-      });
     }
 
     function renderAnalog(channels) {

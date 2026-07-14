@@ -36,6 +36,8 @@ from d65_dashboard import DashboardServer
 
 
 PARSED_DIR_DEFAULT = Path("parsedD65")
+DASHBOARD_HISTORY_SECONDS = 30.0
+DASHBOARD_MAX_SAMPLES_PER_CHANNEL = 1200
 
 # These endpoints use PDO-shaped identifiers but did not publish heartbeat in
 # the captured D65 log. The pairing is structural and remains an inference.
@@ -111,7 +113,7 @@ class AnalogState:
     updates: int = 0
     first_seen: float = 0.0
     last_seen: float = 0.0
-    samples: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
+    samples: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=12000))
 
 
 @dataclass
@@ -195,6 +197,7 @@ def build_signal_catalog() -> dict[str, SignalDefinition]:
             bit=6,
             source="horn log correlation",
             confidence="high",
+            event_mode="changes",
         ),
         SignalDefinition(
             key="CPU1-IMAGE.TPDO4.CABIN_WARNING",
@@ -208,6 +211,7 @@ def build_signal_catalog() -> dict[str, SignalDefinition]:
             bit=4,
             source="horn log correlation",
             confidence="high",
+            event_mode="changes",
         ),
         SignalDefinition(
             key="CPU3-IMAGE.TPDO4.CABIN_WARNING",
@@ -221,6 +225,7 @@ def build_signal_catalog() -> dict[str, SignalDefinition]:
             bit=2,
             source="horn log correlation",
             confidence="high",
+            event_mode="changes",
         ),
         SignalDefinition(
             key="CPU2-IMAGE.TPDO4.B301A",
@@ -337,6 +342,260 @@ def build_signal_catalog() -> dict[str, SignalDefinition]:
     )
     for definition in inferred:
         catalog[definition.key] = definition
+
+    # RPDO4 uses the same 24-channel hardware-output ordering on CPU1/2/3.
+    # The pin order is independently supported by switch correlations on CPU1
+    # and CPU2; names below come from the CPU1 electrical schematic.
+    cpu1_outputs = {
+        (1, 0): (45, "Y206B_TRAMMING_LEFT_BACKWARD", "Y206B TRAMMING LEFT BACKWARD output channel"),
+        (1, 1): (44, "Y206A_TRAMMING_LEFT_FORWARD", "Y206A TRAMMING LEFT FORWARD output channel"),
+        (1, 2): (47, "Y207B_TRAMMING_RIGHT_BACKWARD", "Y207B TRAMMING RIGHT BACKWARD output channel"),
+        (1, 3): (46, "Y207A_TRAMMING_RIGHT_FORWARD", "Y207A TRAMMING RIGHT FORWARD output channel"),
+        (1, 4): (36, "Y169_ENABLE_TRAMMING_MODE", "Y169 ENABLE TRAMMING MODE / K226 BEACON BRANCH command"),
+        (1, 5): (54, "K18_DIESEL_REFUELLING_PUMP", "K18 DIESEL REFUELLING PUMP relay command"),
+        (1, 6): (17, "K200_REMOTE_SHUT_DOWN", "K200 REMOTE SHUT DOWN relay command"),
+        (1, 7): (53, "K5_STARTER_RELAY", "K5 STARTER relay command"),
+        (2, 0): (39, "Y101A_IMPACT_ON", "Y101A IMPACT ON command"),
+        (2, 1): (3, "UNASSIGNED_PIN_3", "CPU1 output pin 3 (schematic function unassigned)"),
+        (2, 2): (40, "Y109_ANTI_JAMMING", "Y109 ANTI JAMMING command"),
+        (2, 3): (22, "Y120_PREHEATING_HYDRAULIC_OIL", "Y120A/Y120B/Y120C PRE-HEATING HYDRAULIC OIL command"),
+        (2, 4): (41, "Y121A_TRAMMING_MODE", "Y121A TRAMMING MODE / Y115 FLUSH AIR FULL command"),
+        (2, 5): (42, "Y122_TRAMMING_HIGH_SPEED", "Y122 TRAMMING HIGH SPEED command"),
+        (2, 6): (43, "Y101C_DRILL_FEED_LOW_PRESSURE", "Y101C DRILL FEED LOW PRESSURE command"),
+        (2, 7): (4, "Y107_Y165_ECL_COLLECTION", "Y107 ECG / Y165 HECL command"),
+        (3, 0): (48, "Y210B_COMPRESSOR_HIGH_PRESSURE_STAGE", "Y210B COMPRESSOR HIGH-PRESSURE STAGE command"),
+        (3, 1): (49, "K178_RAPID_FEED_THREADING", "K178 RAPID FEED/THREADING relay command"),
+        (3, 2): (31, "Y300_GRIPPER_OPEN", "Y300 GRIPPER OPEN command"),
+        (3, 3): (50, "Y301A_TRANSFER_ARM_TO_CAROUSEL", "Y301A TRANSFER ARM TO CAROUSEL command"),
+        (3, 4): (51, "Y301B_TRANSFER_ARM_TO_DRILL_CENTER", "Y301B TRANSFER ARM TO DRILL CENTER command"),
+        (3, 5): (52, "Y410A_HYDRAULIC_JACK_OUT", "Y410A HYDRAULIC JACK OUT command"),
+        (3, 6): (16, "Y410B_HYDRAULIC_JACK_IN", "Y410B HYDRAULIC JACK IN command"),
+        (3, 7): (35, "Y306_RODGRIPPER_LOOSE_GRIP", "Y306 RODGRIPPER LOOSE GRIP command"),
+    }
+    directly_correlated_cpu1_outputs = {
+        (1, 4),
+        (1, 7),
+        (2, 4),
+        (2, 5),
+        (2, 6),
+        (2, 7),
+        (3, 0),
+        (3, 1),
+        (3, 2),
+        (3, 4),
+        (3, 5),
+        (3, 6),
+    }
+    for (byte_number, bit_number), (pin, key_suffix, name) in cpu1_outputs.items():
+        direct = (byte_number, bit_number) in directly_correlated_cpu1_outputs
+        definition = SignalDefinition(
+            key=f"CPU1.RPDO4.{key_suffix}",
+            name=name,
+            node_id=16,
+            node_name="CPU1",
+            cob_id=0x510,
+            service="RPDO",
+            pdo_number=4,
+            byte=byte_number,
+            bit=bit_number,
+            pin=pin,
+            source=(
+                "D65_can0 switch/output edge correlation and common CPU output-pin order"
+                if direct
+                else "common CPU1/CPU2/CPU3 output-pin order and electrical schematic"
+            ),
+            confidence=(
+                "high bit-to-pin mapping; Y410 A/B direction conflicts with switch labels"
+                if (byte_number, bit_number) in {(3, 5), (3, 6)}
+                else "high" if direct else "high bit-to-pin mapping; actuation not observed"
+            ),
+            event_mode="changes",
+        )
+        catalog[definition.key] = definition
+
+    cpu1_image_definitions = (
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.B119_ARM_IN_MIDDLE_POSITION",
+            name="B119 ARM IN MIDDLE POSITION",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=1,
+            bit=1,
+            pin=27,
+            source="D65_can0 transfer-arm position sequence",
+            confidence="high sequence identity",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.B120_ARM_IN_DRILL_CENTER",
+            name="B120 ARM IN DRILL CENTER",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=1,
+            bit=2,
+            pin=9,
+            source="D65_can0 transfer-arm position sequence",
+            confidence="high sequence identity",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.B118_ARM_IN_CAROUSEL",
+            name="B118 ARM IN CAROUSEL",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=1,
+            bit=4,
+            pin=10,
+            source="D65_can0 transfer-arm position sequence",
+            confidence="high sequence identity",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.B184_HYDRAULIC_JACK_IN",
+            name="B184 HYDRAULIC JACK IN",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=1,
+            bit=6,
+            pin=11,
+            source="D65_can0 isolated hydraulic-jack movements",
+            confidence="high",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.K302_IGNITION_SIGNAL",
+            name="K302 IGNITION SIGNAL feedback",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=2,
+            bit=7,
+            pin=38,
+            source="D65_can0 engine stop/start sequence",
+            confidence="high",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.TRAMMING_MODE_STATUS",
+            name="CPU1 TRAMMING MODE state acknowledgement",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=0,
+            source="D65_can0 0x510 B0.4/B1.4 correlation",
+            confidence="high raw state; electrical source unresolved",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.STARTER_RELAY_STATUS",
+            name="K5 STARTER relay state acknowledgement",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=3,
+            source="D65_can0 engine-start correlation",
+            confidence="high raw state; feedback versus command echo unresolved",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.B134_ROTATION_PRESSURE_CANDIDATE",
+            name="B134 ROTATION PRESSURE candidate",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=4,
+            pin=55,
+            source="D65_can0 rotation-log isolation",
+            confidence="inferred; verify one isolated rotation cycle",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.S167_HOOD_UP_ROUTED_PULSE_CANDIDATE",
+            name="S167-A1 HOOD UP routed pulse candidate",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=5,
+            source="D65_can0 drilling-log edge correlation",
+            confidence="inferred routed state; not a physical CPU1 input",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU1-IMAGE.TPDO4.OUTPUT_CHANNEL_B0_5_STATUS",
+            name="CPU1 output channel B0.5 state acknowledgement",
+            node_id=26,
+            node_name="CPU1-IMAGE",
+            cob_id=0x49A,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=7,
+            source="D65_can0 engine-stop 0x510 B0.5 correlation",
+            confidence="high raw state; K18 semantics unresolved",
+            event_mode="changes",
+        ),
+    )
+    for definition in cpu1_image_definitions:
+        catalog[definition.key] = definition
+
+    mapped_cpu1_image_bits = {
+        (1, 1),
+        (1, 2),
+        (1, 4),
+        (1, 6),
+        (2, 4),
+        (2, 7),
+        (3, 0),
+        (3, 3),
+        (3, 4),
+        (3, 5),
+        (3, 7),
+    }
+    for byte_number in range(1, 4):
+        for bit_number in range(8):
+            if (byte_number, bit_number) in mapped_cpu1_image_bits:
+                continue
+            definition = SignalDefinition(
+                key=f"CPU1-IMAGE.TPDO4.PROCESS_FLAG_B{byte_number}_{bit_number}",
+                name=f"CPU1 PROCESS IMAGE B{byte_number}.{bit_number} (unmapped)",
+                node_id=26,
+                node_name="CPU1-IMAGE",
+                cob_id=0x49A,
+                service="TPDO",
+                pdo_number=4,
+                byte=byte_number,
+                bit=bit_number,
+                source="D65_can0 multi-log bitfield analysis",
+                confidence="raw process-image bit; physical meaning unresolved",
+                event_mode="changes",
+            )
+            catalog[definition.key] = definition
 
     mapped_cpu2_outputs = {
         (1, 0): (
@@ -480,6 +739,158 @@ def build_signal_catalog() -> dict[str, SignalDefinition]:
                 event_mode="changes",
             )
             catalog[definition.key] = definition
+
+    mapped_cpu3_outputs = {
+        (3, 2): (
+            "Y251A_DCT_FILTER_1_CLEANING",
+            "Y251A DCT FILTER 1 CLEANING command",
+            "high group identity; A-D order inferred from the cyclic four-bit sequence",
+        ),
+        (3, 3): (
+            "Y251B_DCT_FILTER_2_CLEANING",
+            "Y251B DCT FILTER 2 CLEANING command",
+            "high group identity; A-D order inferred from the cyclic four-bit sequence",
+        ),
+        (3, 4): (
+            "Y251C_DCT_FILTER_3_CLEANING",
+            "Y251C DCT FILTER 3 CLEANING command",
+            "high group identity; A-D order inferred from the cyclic four-bit sequence",
+        ),
+        (3, 5): (
+            "Y251D_DCT_FILTER_4_CLEANING",
+            "Y251D DCT FILTER 4 CLEANING command",
+            "high group identity; A-D order inferred from the cyclic four-bit sequence",
+        ),
+        (3, 6): (
+            "Y253_DCT_OUTLET_CANDIDATE",
+            "Y253 DCT OUTLET command candidate",
+            "inferred; active around the first DCT cleaning sequence",
+        ),
+        (3, 7): (
+            "Y250_DCT_ON_CANDIDATE",
+            "Y250 DCT ON command candidate",
+            "high candidate; follows drill mode and brackets the DCT cleaning sequences",
+        ),
+    }
+    for (byte_number, bit_number), (key_suffix, name, confidence) in mapped_cpu3_outputs.items():
+        definition = SignalDefinition(
+            key=f"CPU3.RPDO4.{key_suffix}",
+            name=name,
+            node_id=17,
+            node_name="CPU3",
+            cob_id=0x511,
+            service="RPDO",
+            pdo_number=4,
+            byte=byte_number,
+            bit=bit_number,
+            source="D65_can0 drilling sequence correlation",
+            confidence=confidence,
+            event_mode="changes",
+        )
+        catalog[definition.key] = definition
+
+    mapped_cpu3_output_bits = set(mapped_cpu3_outputs) | {(1, 6)}
+    for byte_number in range(1, 4):
+        for bit_number in range(8):
+            if (byte_number, bit_number) in mapped_cpu3_output_bits:
+                continue
+            definition = SignalDefinition(
+                key=f"CPU3.RPDO4.OUTPUT_CMD_B{byte_number}_{bit_number}",
+                name=f"CPU3 OUTPUT COMMAND B{byte_number}.{bit_number} (unmapped)",
+                node_id=17,
+                node_name="CPU3",
+                cob_id=0x511,
+                service="RPDO",
+                pdo_number=4,
+                byte=byte_number,
+                bit=bit_number,
+                source="D65_can0 multi-log bitfield analysis",
+                confidence="raw command bit confirmed; physical output unresolved",
+                event_mode="changes",
+            )
+            catalog[definition.key] = definition
+
+    cpu3_image_definitions = (
+        SignalDefinition(
+            key="CPU3-IMAGE.TPDO4.B178_ROD_IN_CAROUSEL_OUTLET_CANDIDATE",
+            name="B178 ROD IN CAROUSEL OUTLET candidate",
+            node_id=27,
+            node_name="CPU3-IMAGE",
+            cob_id=0x49B,
+            service="TPDO",
+            pdo_number=4,
+            byte=1,
+            bit=0,
+            source="2026-07-14 isolated carousel correlation",
+            confidence="high functional candidate; B316 laser alternative not fully excluded",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU3-IMAGE.TPDO4.CPU3_OUTPUT_STATE_ACK",
+            name="CPU3 output-state acknowledgement",
+            node_id=27,
+            node_name="CPU3-IMAGE",
+            cob_id=0x49B,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=0,
+            source="D65_can0 0x511/0x49B edge correlation",
+            confidence="raw behavior confirmed; exact acknowledged output group unresolved",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU3-IMAGE.TPDO4.B172_PHASE_A_CANDIDATE",
+            name="B172 DEPTH ENCODER phase A candidate",
+            node_id=27,
+            node_name="CPU3-IMAGE",
+            cob_id=0x49B,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=6,
+            source="D65_can0 B172 count/quadrature correlation",
+            confidence="high phase pair identity; A/B pin polarity unresolved",
+            event_mode="changes",
+        ),
+        SignalDefinition(
+            key="CPU3-IMAGE.TPDO4.B172_PHASE_B_CANDIDATE",
+            name="B172 DEPTH ENCODER phase B candidate",
+            node_id=27,
+            node_name="CPU3-IMAGE",
+            cob_id=0x49B,
+            service="TPDO",
+            pdo_number=4,
+            byte=3,
+            bit=7,
+            source="D65_can0 B172 count/quadrature correlation",
+            confidence="high phase pair identity; A/B pin polarity unresolved",
+            event_mode="changes",
+        ),
+    )
+    for definition in cpu3_image_definitions:
+        catalog[definition.key] = definition
+
+    mapped_cpu3_image_bits = {(1, 0), (3, 0), (3, 2), (3, 6), (3, 7)}
+    for byte_number in range(1, 4):
+        for bit_number in range(8):
+            if (byte_number, bit_number) in mapped_cpu3_image_bits:
+                continue
+            definition = SignalDefinition(
+                key=f"CPU3-IMAGE.TPDO4.PROCESS_FLAG_B{byte_number}_{bit_number}",
+                name=f"CPU3 PROCESS IMAGE B{byte_number}.{bit_number} (unmapped)",
+                node_id=27,
+                node_name="CPU3-IMAGE",
+                cob_id=0x49B,
+                service="TPDO",
+                pdo_number=4,
+                byte=byte_number,
+                bit=bit_number,
+                source="D65_can0 multi-log bitfield analysis",
+                confidence="raw process-image bit; physical meaning unresolved",
+                event_mode="changes",
+            )
+            catalog[definition.key] = definition
     return catalog
 
 
@@ -555,6 +966,74 @@ ANALOG_CATALOG: tuple[AnalogDefinition, ...] = (
         unit="mA",
         raw_unit="mA",
         source="d65_nodes.yaml cpu1_tpdo1_tramming_pwm_feedback",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.RPDO2.Y206A_REQUESTED_CURRENT",
+        name="Y206A TRAMMING LEFT FORWARD requested current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x310,
+        service="RPDO",
+        pdo_number=2,
+        byte=0,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="D65_can0 CPU1 requested/actual PWM correlation",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.RPDO2.Y206B_REQUESTED_CURRENT",
+        name="Y206B TRAMMING LEFT BACKWARD requested current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x310,
+        service="RPDO",
+        pdo_number=2,
+        byte=2,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="D65_can0 CPU1 requested/actual PWM correlation",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.RPDO2.Y207A_REQUESTED_CURRENT",
+        name="Y207A TRAMMING RIGHT FORWARD requested current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x310,
+        service="RPDO",
+        pdo_number=2,
+        byte=4,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="D65_can0 CPU1 requested/actual PWM correlation",
+        confidence="high",
+    ),
+    AnalogDefinition(
+        key="CPU1.RPDO2.Y207B_REQUESTED_CURRENT",
+        name="Y207B TRAMMING RIGHT BACKWARD requested current",
+        node_id=16,
+        node_name="CPU1",
+        cob_id=0x310,
+        service="RPDO",
+        pdo_number=2,
+        byte=6,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="D65_can0 CPU1 requested/actual PWM correlation",
         confidence="high",
     ),
     AnalogDefinition(
@@ -643,6 +1122,24 @@ ANALOG_CATALOG: tuple[AnalogDefinition, ...] = (
         confidence="high; engineering scale unknown",
     ),
     AnalogDefinition(
+        key="CPU3.RPDO2.Y504_REQUESTED_CURRENT",
+        name="Y504 COOLING FAN HYDRAULIC OIL AND COMPRESSOR OIL requested current",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x311,
+        service="RPDO",
+        pdo_number=2,
+        byte=0,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="D65_can0 requested/actual word correlation",
+        confidence="high; matches 0x191 B0 actual-current steps",
+        event_mode="changes",
+    ),
+    AnalogDefinition(
         key="CPU3.TPDO1.Y504_CURRENT",
         name="Y504 COOLING FAN HYDRAULIC OIL AND COMPRESSOR OIL actual current",
         node_id=17,
@@ -658,6 +1155,24 @@ ANALOG_CATALOG: tuple[AnalogDefinition, ...] = (
         raw_unit="mA",
         source="d65_nodes.yaml pwm_feedback_candidates",
         confidence="inferred",
+    ),
+    AnalogDefinition(
+        key="CPU3.RPDO3.Y501_REQUESTED_CURRENT",
+        name="Y501 COOLING FAN DIESEL MOTOR requested current",
+        node_id=17,
+        node_name="CPU3",
+        cob_id=0x411,
+        service="RPDO",
+        pdo_number=3,
+        byte=6,
+        length=2,
+        scale=1.0,
+        offset=0.0,
+        unit="mA",
+        raw_unit="mA",
+        source="D65_can0 requested/actual word correlation",
+        confidence="high; matches 0x291 B6 actual-current steps",
+        event_mode="changes",
     ),
     AnalogDefinition(
         key="CPU3.TPDO2.Y501_CURRENT",
@@ -810,8 +1325,8 @@ ANALOG_CATALOG: tuple[AnalogDefinition, ...] = (
         unit="P",
         raw_unit="P",
         signed=True,
-        source="D65_can0 quadrature correlation; CPU2 physical input B301",
-        confidence="high counter identity; counts-to-degrees scale unknown",
+        source="D65_can0 quadrature correlation; CPU2 physical input B301; operator-annotated +/-5 degree sweep",
+        confidence="high counter identity; 57.3 P/deg is a calibration candidate, not yet isolated",
     ),
     AnalogDefinition(
         key="CPU2-IMAGE.TPDO3.B301Z_INDEX_PULSE_COUNT",
@@ -847,7 +1362,8 @@ ANALOG_CATALOG: tuple[AnalogDefinition, ...] = (
         unit="P",
         raw_unit="P",
         source="D65_can0 log correlation; HMI B172_1 raw 50760 P",
-        confidence="high raw identity; engineering depth scale still candidate",
+        confidence="high raw identity and phase correlation; engineering depth scale still candidate",
+        event_mode="changes",
     ),
 )
 ANALOG_BY_COB_ID: dict[int, list[AnalogDefinition]] = {}
@@ -1482,6 +1998,135 @@ def render_analog_table(state: MonitorState, width: int) -> list[str]:
     return ["ANALOG/PWM SIGNALS | decoded word channels from d65_nodes.yaml"] + rows
 
 
+def render_cpu1_protocol(state: MonitorState, width: int) -> list[str]:
+    def pdo_payload(node_id: int, service: str, number: int) -> bytes:
+        node = state.nodes.get(node_id)
+        if node is None:
+            return b""
+        pdo = node.pdo.get((service, number))
+        return b"" if pdo is None else pdo.data
+
+    def digital_state(key: str) -> str:
+        signal = state.signals.get(key)
+        if signal is None or signal.value is None:
+            return "?"
+        return "ON" if signal.value else "."
+
+    def numeric_value(key: str) -> str:
+        analog = state.analog.get(key)
+        return "?" if analog is None or analog.raw_value is None else str(analog.raw_value)
+
+    image = pdo_payload(26, "TPDO", 4)
+    output = pdo_payload(16, "RPDO", 4)
+    active_output_bits = [
+        f"B{byte_number}.{bit_number}"
+        for byte_number, byte_value in enumerate(output, start=1)
+        for bit_number in range(8)
+        if byte_value & (1 << bit_number)
+    ]
+    active_text = ",".join(active_output_bits) if active_output_bits else "none"
+
+    lines = ["CPU1 PROTOCOL | controller node 16 + process-image endpoint 26"]
+    lines.append(
+        "  TRAM PWM mA  "
+        f"Y206A req/act={numeric_value('CPU1.RPDO2.Y206A_REQUESTED_CURRENT')}/"
+        f"{numeric_value('CPU1.TPDO1.Y206A_CURRENT')}  "
+        f"Y206B={numeric_value('CPU1.RPDO2.Y206B_REQUESTED_CURRENT')}/"
+        f"{numeric_value('CPU1.TPDO1.Y206B_CURRENT')}  "
+        f"Y207A={numeric_value('CPU1.RPDO2.Y207A_REQUESTED_CURRENT')}/"
+        f"{numeric_value('CPU1.TPDO1.Y207A_CURRENT')}  "
+        f"Y207B={numeric_value('CPU1.RPDO2.Y207B_REQUESTED_CURRENT')}/"
+        f"{numeric_value('CPU1.TPDO1.Y207B_CURRENT')}"
+    )
+    lines.append(
+        "  ARM POSITION  "
+        f"carousel={digital_state('CPU1-IMAGE.TPDO4.B118_ARM_IN_CAROUSEL'):<2}  "
+        f"middle={digital_state('CPU1-IMAGE.TPDO4.B119_ARM_IN_MIDDLE_POSITION'):<2}  "
+        f"drill-center={digital_state('CPU1-IMAGE.TPDO4.B120_ARM_IN_DRILL_CENTER'):<2}"
+    )
+    lines.append(
+        "  JACK  "
+        f"in-sensor={digital_state('CPU1-IMAGE.TPDO4.B184_HYDRAULIC_JACK_IN'):<2}  "
+        f"Y410A={digital_state('CPU1.RPDO4.Y410A_HYDRAULIC_JACK_OUT'):<2}  "
+        f"Y410B={digital_state('CPU1.RPDO4.Y410B_HYDRAULIC_JACK_IN'):<2}  "
+        "A/B direction needs an isolated verification"
+    )
+    lines.append(
+        "  STATE  "
+        f"tramming={digital_state('CPU1-IMAGE.TPDO4.TRAMMING_MODE_STATUS'):<2}  "
+        f"ignition={digital_state('CPU1-IMAGE.TPDO4.K302_IGNITION_SIGNAL'):<2}  "
+        f"starter={digital_state('CPU1.RPDO4.K5_STARTER_RELAY'):<2}  "
+        f"rotation-pressure?={digital_state('CPU1-IMAGE.TPDO4.B134_ROTATION_PRESSURE_CANDIDATE')}"
+    )
+    lines.append(
+        "  B409B PITCH/ROLL  not present in CAN0 PDOs; 0x290 and CPU1-IMAGE analog PDOs are zero in all captures"
+    )
+    lines.append(f"  INPUT IMAGE  0x49A={image.hex(' ').upper() if image else '-'}")
+    lines.append(f"  OUTPUT CMD   0x510={output.hex(' ').upper() if output else '-'}  1-bits={active_text}")
+    return [short(line, width) for line in lines]
+
+
+def render_cpu3_protocol(state: MonitorState, width: int) -> list[str]:
+    def pdo_payload(node_id: int, service: str, number: int) -> bytes:
+        node = state.nodes.get(node_id)
+        if node is None:
+            return b""
+        pdo = node.pdo.get((service, number))
+        return b"" if pdo is None else pdo.data
+
+    def digital_state(key: str) -> str:
+        signal = state.signals.get(key)
+        if signal is None or signal.value is None:
+            return "?"
+        return "ON" if signal.value else "."
+
+    def numeric_value(key: str) -> str:
+        analog = state.analog.get(key)
+        return "?" if analog is None or analog.raw_value is None else str(analog.raw_value)
+
+    image = pdo_payload(27, "TPDO", 4)
+    output = pdo_payload(17, "RPDO", 4)
+    active_output_bits = [
+        f"B{byte_number}.{bit_number}"
+        for byte_number, byte_value in enumerate(output, start=1)
+        for bit_number in range(8)
+        if byte_value & (1 << bit_number)
+    ]
+    active_text = ",".join(active_output_bits) if active_output_bits else "none"
+
+    lines = ["CPU3 PROTOCOL | controller node 17 + process-image endpoint 27"]
+    lines.append(
+        "  B172  "
+        f"raw={numeric_value('CPU3-IMAGE.TPDO2.B172_1_DEPTH_ENCODER_RAW'):<5}  "
+        f"A?={digital_state('CPU3-IMAGE.TPDO4.B172_PHASE_A_CANDIDATE'):<2}  "
+        f"B?={digital_state('CPU3-IMAGE.TPDO4.B172_PHASE_B_CANDIDATE'):<2}  "
+        "engineering scale requires a second calibration point"
+    )
+    lines.append(
+        "  INPUT/STATUS  "
+        f"0x49B={image.hex(' ').upper() if image else '-'}  "
+        f"B178?={digital_state('CPU3-IMAGE.TPDO4.B178_ROD_IN_CAROUSEL_OUTLET_CANDIDATE')}"
+    )
+    lines.append(
+        "  DCT  "
+        f"ON?={digital_state('CPU3.RPDO4.Y250_DCT_ON_CANDIDATE'):<2}  "
+        f"OUTLET?={digital_state('CPU3.RPDO4.Y253_DCT_OUTLET_CANDIDATE'):<2}  "
+        f"filters={digital_state('CPU3.RPDO4.Y251A_DCT_FILTER_1_CLEANING')}/"
+        f"{digital_state('CPU3.RPDO4.Y251B_DCT_FILTER_2_CLEANING')}/"
+        f"{digital_state('CPU3.RPDO4.Y251C_DCT_FILTER_3_CLEANING')}/"
+        f"{digital_state('CPU3.RPDO4.Y251D_DCT_FILTER_4_CLEANING')}"
+    )
+    lines.append(
+        "  FANS mA  "
+        f"Y504 req/act={numeric_value('CPU3.RPDO2.Y504_REQUESTED_CURRENT')}/"
+        f"{numeric_value('CPU3.TPDO1.Y504_CURRENT')}  "
+        f"Y501 req/act={numeric_value('CPU3.RPDO3.Y501_REQUESTED_CURRENT')}/"
+        f"{numeric_value('CPU3.TPDO2.Y501_CURRENT')}"
+    )
+    lines.append(f"  OUTPUT CMD  0x511={output.hex(' ').upper() if output else '-'}  1-bits={active_text}")
+    return [short(line, width) for line in lines]
+
+
 def render_cpu2_protocol(state: MonitorState, width: int) -> list[str]:
     def pdo_payload(node_id: int, service: str, number: int) -> bytes:
         node = state.nodes.get(node_id)
@@ -1518,7 +2163,7 @@ def render_cpu2_protocol(state: MonitorState, width: int) -> list[str]:
         f"A={digital_state('CPU2-IMAGE.TPDO4.B301A'):<2}  "
         f"B={digital_state('CPU2-IMAGE.TPDO4.B301B'):<2}  "
         f"Z={digital_state('CPU2-IMAGE.TPDO4.B301Z'):<2}  Z-pulses={z_count_value:<3}  "
-        "scale=count (degree scale unknown)"
+        "scale~57.3 P/deg candidate (raw retained)"
     )
     lines.append(
         "  LEFT OSC STATUS  "
@@ -1569,6 +2214,12 @@ def render_dashboard(
         lines.extend(render_io_columns(state, width))
     else:
         lines.extend(render_focus_node(state, focus_node))
+
+    lines.append("")
+    lines.extend(render_cpu1_protocol(state, width))
+
+    lines.append("")
+    lines.extend(render_cpu3_protocol(state, width))
 
     lines.append("")
     lines.extend(render_cpu2_protocol(state, width))
@@ -1637,6 +2288,40 @@ def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
                 yield {"type": "parse_error", "line": line_number, "error": str(error)}
 
 
+def dashboard_history_samples(
+    samples: deque[tuple[float, float]], end_timestamp: float
+) -> list[tuple[float, float]]:
+    if not samples or not end_timestamp:
+        return []
+    start_timestamp = max(0.0, end_timestamp - DASHBOARD_HISTORY_SECONDS)
+    visible: list[tuple[float, float]] = []
+    prior_value: float | None = None
+    for timestamp, value in samples:
+        if timestamp < start_timestamp:
+            prior_value = value
+        elif timestamp <= end_timestamp:
+            visible.append((timestamp, value))
+    if prior_value is not None and (not visible or visible[0][0] > start_timestamp):
+        visible.insert(0, (start_timestamp, prior_value))
+    if not visible:
+        return []
+    if visible[-1][0] < end_timestamp:
+        visible.append((end_timestamp, visible[-1][1]))
+    if len(visible) <= DASHBOARD_MAX_SAMPLES_PER_CHANNEL:
+        return visible
+
+    interior = visible[1:-1]
+    bucket_count = max(1, (DASHBOARD_MAX_SAMPLES_PER_CHANNEL - 2) // 2)
+    bucket_size = max(1, (len(interior) + bucket_count - 1) // bucket_count)
+    reduced = [visible[0]]
+    for index in range(0, len(interior), bucket_size):
+        bucket = interior[index : index + bucket_size]
+        extrema = {min(bucket, key=lambda item: item[1]), max(bucket, key=lambda item: item[1])}
+        reduced.extend(sorted(extrema, key=lambda item: item[0]))
+    reduced.append(visible[-1])
+    return reduced
+
+
 def browser_dashboard_snapshot(
     state: MonitorState,
     source_log: Path,
@@ -1668,7 +2353,11 @@ def browser_dashboard_snapshot(
                 "name": definition.name,
                 "pin": definition.pin,
                 "location": (
-                    f"X3:{definition.pin:02d}"
+                    (
+                        f"X3:{definition.pin:02d}"
+                        if definition.node_id in IO_TPDO1_SIGNALS
+                        else f"PIN:{definition.pin:02d}"
+                    )
                     if definition.pin is not None
                     else f"B{definition.byte}.{definition.bit}"
                 ),
@@ -1732,7 +2421,9 @@ def browser_dashboard_snapshot(
                             "time": max(0.0, timestamp - state.first_source_epoch),
                             "value": value,
                         }
-                        for timestamp, value in analog.samples
+                        for timestamp, value in dashboard_history_samples(
+                            analog.samples, state.last_source_epoch
+                        )
                     ]
                 ),
             }
